@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pure ONNX OCR WASM Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .upload-section {
+            margin-bottom: 30px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px dashed #dee2e6;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .upload-section:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .upload-section.dragover {
+            border-color: #667eea;
+            background: #e8edff;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            margin: 20px 0;
+        }
+
+        input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .file-input-label {
+            display: inline-block;
+            padding: 15px 30px;
+            background: #667eea;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .file-input-label:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .file-info {
+            margin-top: 15px;
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+
+        .models-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .models-section h3 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        .model-group {
+            margin-bottom: 15px;
+        }
+
+        .model-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #495057;
+            font-size: 0.9em;
+        }
+
+        .model-group input[type="file"] {
+            position: relative;
+            opacity: 1;
+            width: 100%;
+            height: auto;
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .options-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .options-section h3 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .option-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .option-group label {
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #495057;
+            font-size: 0.9em;
+        }
+
+        .option-group select,
+        .option-group input {
+            padding: 10px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            font-size: 1em;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+
+        button {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.processing {
+            opacity: 0.7;
+            cursor: wait;
+            position: relative;
+        }
+
+        button.processing::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            margin: auto;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #5a6268;
+        }
+
+        .result-section {
+            margin-top: 30px;
+        }
+
+        .result-section h3 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        .result-actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 0.9em;
+        }
+
+        #result {
+            width: 100%;
+            min-height: 300px;
+            padding: 15px;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            background: #f8f9fa;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            overflow-x: auto;
+        }
+
+        .preview-section {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .preview-container {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+        }
+
+        .preview-section img {
+            max-width: 100%;
+            max-height: 400px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: block;
+        }
+
+        .preview-section canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            max-width: 100%;
+            max-height: 400px;
+            border-radius: 8px;
+            pointer-events: none;
+        }
+
+        .preview-loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            z-index: 10;
+        }
+
+        .preview-loading-overlay.hidden {
+            display: none;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 15px;
+        }
+
+        /* Prevent user interaction during processing */
+        body.processing {
+            cursor: wait;
+            user-select: none;
+        }
+
+        body.processing * {
+            pointer-events: none;
+        }
+
+        body.processing button.processing {
+            pointer-events: auto;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+
+        .loading::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border: 1px solid #f5c6cb;
+        }
+
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border: 1px solid #c3e6cb;
+        }
+
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border: 1px solid #bee5eb;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📸 Pure ONNX OCR WASM Demo</h1>
+            <p>画像からテキストを検出・認識</p>
+        </div>
+        <div class="content">
+            <div class="models-section">
+                <h3>モデルファイル</h3>
+                <div class="option-group">
+                    <label for="modelSource">モデル読み込み方法</label>
+                    <select id="modelSource">
+                        <option value="fetch">サーバーから読み込む（デフォルト）</option>
+                        <option value="upload">ファイルをアップロード</option>
+                    </select>
+                </div>
+                <div id="modelUploadSection" class="hidden model-upload-section">
+                    <p style="color: #6c757d; font-size: 0.9em; margin-bottom: 15px;">
+                        各モデルファイルを個別にアップロード・切り替えできます。<br>
+                        3つのファイル（検出モデル、認識モデル、辞書）がすべて揃うと自動的にエンジンが構築されます。
+                    </p>
+                    <div class="model-group">
+                        <label for="detModel">検出モデル (det.onnx)</label>
+                        <input type="file" id="detModel" accept=".onnx" />
+                        <small style="color: #6c757d; font-size: 0.85em;">検出モデルを切り替え可能</small>
+                    </div>
+                    <div class="model-group">
+                        <label for="recModel">認識モデル (rec.onnx)</label>
+                        <input type="file" id="recModel" accept=".onnx" />
+                        <small style="color: #6c757d; font-size: 0.85em;">認識モデルを切り替え可能</small>
+                    </div>
+                    <div class="model-group">
+                        <label for="dictionary">辞書ファイル (ppocrv5_dict.txt)</label>
+                        <input type="file" id="dictionary" accept=".txt" />
+                        <small style="color: #6c757d; font-size: 0.85em;">辞書ファイルを切り替え可能</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="upload-section" id="uploadSection">
+                <h2>画像を選択</h2>
+                <div class="file-input-wrapper">
+                    <input type="file" id="fileInput" accept="image/*" />
+                    <label for="fileInput" class="file-input-label">
+                        画像を選択
+                    </label>
+                </div>
+                <div class="file-info" id="fileInfo">または画像をここにドラッグ＆ドロップ</div>
+            </div>
+
+            <div class="preview-section hidden" id="previewSection">
+                <h3>プレビュー</h3>
+                <div class="preview-container">
+                    <img id="previewImage" alt="Preview" />
+                    <canvas id="previewCanvas"></canvas>
+                    <div class="preview-loading-overlay hidden" id="previewLoadingOverlay">
+                        <div style="text-align: center;">
+                            <div class="spinner"></div>
+                            <div class="loading-text">OCR処理中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="options-section">
+                <h3>OCR設定</h3>
+                <div class="options-grid">
+                    <div class="option-group">
+                        <label for="detLimitSideLen">検出最大辺長</label>
+                        <input type="number" id="detLimitSideLen" min="320" max="2048" value="960" />
+                    </div>
+                    <div class="option-group">
+                        <label for="detUnclipRatio">検出拡大率</label>
+                        <input type="number" id="detUnclipRatio" min="1.0" max="3.0" step="0.1" value="1.5" />
+                    </div>
+                    <div class="option-group">
+                        <label for="recBatchSize">認識バッチサイズ</label>
+                        <input type="number" id="recBatchSize" min="1" max="32" value="8" />
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button id="ocrBtn" class="btn-primary" disabled>OCR実行</button>
+                <button id="clearBtn" class="btn-secondary">クリア</button>
+            </div>
+
+            <div class="result-section hidden" id="resultSection">
+                <h3>OCR結果</h3>
+                <div class="result-actions">
+                    <button id="copyBtn" class="btn-primary btn-small">コピー</button>
+                    <button id="downloadBtn" class="btn-primary btn-small">ダウンロード</button>
+                </div>
+                <textarea id="result" readonly></textarea>
+            </div>
+
+            <div id="statusMessage"></div>
+        </div>
+    </div>
+
+    <script type="module" src="index.js"></script>
+</body>
+</html>

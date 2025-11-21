@@ -1,8 +1,8 @@
 ---
-status: pending
+status: progress
 priority: medium
 assignee: Backend
-start_date:
+start_date: 2025-01-27
 end_date:
 tags: [M5, wasm, webassembly, browser]
 depends_on: [task-api-002]
@@ -41,3 +41,51 @@ Pure Rust 設計の主要なメリットの一つは WASM への移植性であ�
 
 ## 作業ログ
 
+### 2025-01-27
+
+#### 完了事項
+
+1. **wasm-bindgen 依存関係の追加**
+   - `Cargo.toml` に `wasm-bindgen` をオプション依存関係として追加
+   - `console_error_panic_hook`, `serde`, `serde-wasm-bindgen`, `js-sys` を追加
+   - `wasm` feature を追加して有効化
+
+2. **メモリバッファベースのモデルロード対応**
+   - `TractDetSession::load_from_bytes()` メソッドを追加
+   - `TractRecSession::load_from_bytes()` メソッドを追加
+   - `tract-onnx` の `model_for_read()` API を使用してメモリバッファからモデルをロード
+
+3. **メモリバッファベースの辞書ロード対応**
+   - `RecDictionary::from_bytes()` メソッドを追加
+   - `from_str()` ヘルパーメソッドで共通化
+   - ユニットテストを追加
+
+4. **WASM ターゲットでのビルド確認**
+   - `wasm32-unknown-unknown` ターゲットでのビルドが成功することを確認
+   - `Cargo.toml` に `[lib]` セクションを追加して `crate-type = ["cdylib", "rlib"]` を設定
+
+5. **wasm-bindgen を使った JavaScript バインディングの実装**
+   - `src/wasm.rs` モジュールを追加
+   - `WasmOcrEngineBuilder` 構造体とメソッドを実装
+   - `WasmOcrEngine` 構造体と `run_from_bytes()` メソッドを実装
+   - JavaScript から呼び出せる API を提供
+
+6. **ブラウザデモの作成**
+   - `examples/wasm-demo/` ディレクトリを作成
+   - `index.html` - 参考ファイルのスタイルを踏襲した美しいUI
+   - `index.js` - WASMモジュールの読み込みとOCR処理の実装
+   - `README.md` - セットアップ手順と使用方法を記載
+
+7. **README への WASM ビルド手順の追記**
+   - WASM ビルド方法とメモリバッファベースの使用方法を記載
+
+#### 未完了事項
+
+1. **パッケージサイズ最適化**
+   - `wasm-opt` の適用
+   - Tree Shaking の最適化
+
+2. **技術調査項目の確認**
+   - `tract-onnx` の WASM 互換性の詳細確認
+   - 画像デコードと後処理クレートの WASM 互換性確認
+   - 実際のブラウザ環境での動作確認

@@ -56,7 +56,10 @@ impl WonnxDetSession {
         })
     }
 
-    async fn run_async(&self, input: &PreprocessedDetInput) -> Result<DetInferenceOutput, OcrError> {
+    async fn run_async(
+        &self,
+        input: &PreprocessedDetInput,
+    ) -> Result<DetInferenceOutput, OcrError> {
         // Convert tract Tensor to wonnx input format
         let input_tensor = tensor_to_wonnx_input(&input.tensor)?;
         let mut inputs = HashMap::new();
@@ -70,14 +73,18 @@ impl WonnxDetSession {
             .map_err(|e| OcrError::GpuInference(format!("wonnx inference failed: {}", e)))?;
 
         // Get the output
-        let output_tensor = outputs
-            .get(&self.output_name)
-            .ok_or_else(|| OcrError::GpuInference(format!("Output '{}' not found", self.output_name)))?;
+        let output_tensor = outputs.get(&self.output_name).ok_or_else(|| {
+            OcrError::GpuInference(format!("Output '{}' not found", self.output_name))
+        })?;
 
         // Extract shape from output data
         let data_len = match output_tensor {
             OutputTensor::F32(data) => data.len(),
-            _ => return Err(OcrError::GpuInference("Unsupported output tensor type".to_string())),
+            _ => {
+                return Err(OcrError::GpuInference(
+                    "Unsupported output tensor type".to_string(),
+                ))
+            }
         };
 
         // For detection, output is typically [1, 1, H, W]
@@ -161,7 +168,10 @@ impl WonnxRecSession {
         })
     }
 
-    async fn run_async(&self, batch: &PreprocessedRecBatch) -> Result<RecInferenceOutput, OcrError> {
+    async fn run_async(
+        &self,
+        batch: &PreprocessedRecBatch,
+    ) -> Result<RecInferenceOutput, OcrError> {
         // Convert tract Tensor to wonnx input format
         let input_tensor = tensor_to_wonnx_input(&batch.tensor)?;
         let mut inputs = HashMap::new();
@@ -175,9 +185,9 @@ impl WonnxRecSession {
             .map_err(|e| OcrError::GpuInference(format!("wonnx inference failed: {}", e)))?;
 
         // Get the output
-        let output_tensor = outputs
-            .get(&self.output_name)
-            .ok_or_else(|| OcrError::GpuInference(format!("Output '{}' not found", self.output_name)))?;
+        let output_tensor = outputs.get(&self.output_name).ok_or_else(|| {
+            OcrError::GpuInference(format!("Output '{}' not found", self.output_name))
+        })?;
 
         // Extract shape from output data
         let tensor_shape = batch.tensor.shape();
@@ -185,7 +195,11 @@ impl WonnxRecSession {
 
         let data_len = match output_tensor {
             OutputTensor::F32(data) => data.len(),
-            _ => return Err(OcrError::GpuInference("Unsupported output tensor type".to_string())),
+            _ => {
+                return Err(OcrError::GpuInference(
+                    "Unsupported output tensor type".to_string(),
+                ))
+            }
         };
 
         // Infer shape: [batch, time_steps, classes]
@@ -197,7 +211,11 @@ impl WonnxRecSession {
         let max_width = batch.max_width as usize;
         let estimated_timesteps = (max_width * 2).max(1); // Heuristic
         let classes = remaining / estimated_timesteps.max(1);
-        let timesteps = if classes > 0 { remaining / classes } else { remaining };
+        let timesteps = if classes > 0 {
+            remaining / classes
+        } else {
+            remaining
+        };
 
         let actual_shape = vec![batch_size, timesteps, classes.max(1)];
 
@@ -304,11 +322,8 @@ fn wonnx_output_to_ndarray_4d(
                 )));
             }
 
-            ndarray::Array4::from_shape_vec(
-                (shape[0], shape[1], shape[2], shape[3]),
-                data.clone(),
-            )
-            .map_err(|e| OcrError::GpuInference(format!("Failed to create Array4: {}", e)))
+            ndarray::Array4::from_shape_vec((shape[0], shape[1], shape[2], shape[3]), data.clone())
+                .map_err(|e| OcrError::GpuInference(format!("Failed to create Array4: {}", e)))
         }
         _ => Err(OcrError::GpuInference(
             "Unsupported output tensor type (expected F32)".to_string(),
@@ -353,7 +368,10 @@ fn wonnx_output_to_ndarray_3d(
 #[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
-    use crate::preprocessing::{DetPreProcessor, DetPreProcessorConfig, RecPreProcessor, RecPreProcessorConfig, RecTextRegion};
+    use crate::preprocessing::{
+        DetPreProcessor, DetPreProcessorConfig, RecPreProcessor, RecPreProcessorConfig,
+        RecTextRegion,
+    };
     use image::{DynamicImage, ImageBuffer, Rgb};
     use std::env;
     use std::path::{Path, PathBuf};
@@ -430,13 +448,17 @@ mod tests {
 
         let image = dummy_image(320, 320);
         let preprocessor = DetPreProcessor::new(DetPreProcessorConfig::default());
-        let preprocessed = preprocessor.process(&image)
+        let preprocessed = preprocessor
+            .process(&image)
             .expect("Preprocessing should succeed");
 
         let output = session.run(&preprocessed);
         assert!(output.is_ok(), "WonnxDetSession inference should succeed");
         let output = output.unwrap();
-        assert!(!output.probability_map.is_empty(), "Output should not be empty");
+        assert!(
+            !output.probability_map.is_empty(),
+            "Output should not be empty"
+        );
     }
 
     #[test]
@@ -458,7 +480,8 @@ mod tests {
             width: 120,
             height: 60,
         }];
-        let batch = preprocessor.process(&image, &regions)
+        let batch = preprocessor
+            .process(&image, &regions)
             .expect("Preprocessing should succeed");
 
         let output = session.run(&batch);
@@ -474,7 +497,7 @@ mod tests {
         // Note: This test requires both CPU and GPU backends to be available
         let det_model_path = locate_ppocrv5_asset("det.onnx");
         let rec_model_path = locate_ppocrv5_asset("rec.onnx");
-        
+
         if det_model_path.is_none() || rec_model_path.is_none() {
             println!("Skipping test: model files not found");
             return;
@@ -491,19 +514,22 @@ mod tests {
 
         let image = dummy_image(320, 320);
         let preprocessor = DetPreProcessor::new(DetPreProcessorConfig::default());
-        let preprocessed = preprocessor.process(&image)
+        let preprocessed = preprocessor
+            .process(&image)
             .expect("Preprocessing should succeed");
 
         // Run CPU inference
         let cpu_session = TractDetSession::load(det_model_path.as_ref().unwrap())
             .expect("CPU session should load");
-        let cpu_output = cpu_session.run(&preprocessed)
+        let cpu_output = cpu_session
+            .run(&preprocessed)
             .expect("CPU inference should succeed");
 
         // Run GPU inference
-        let gpu_session = WonnxDetSession::load(det_model_path.unwrap())
-            .expect("GPU session should load");
-        let gpu_output = gpu_session.run(&preprocessed)
+        let gpu_session =
+            WonnxDetSession::load(det_model_path.unwrap()).expect("GPU session should load");
+        let gpu_output = gpu_session
+            .run(&preprocessed)
             .expect("GPU inference should succeed");
 
         // Compare outputs (allow for small floating point differences)

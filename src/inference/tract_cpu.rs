@@ -6,6 +6,7 @@ use crate::preprocessing::{PreprocessedDetInput, PreprocessedRecBatch};
 use crate::recognition::RecInferenceOutput;
 use ndarray::Axis;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use tract_onnx::prelude::*;
@@ -32,6 +33,32 @@ impl TractDetSession {
                 path: model_path.to_path_buf(),
             })?;
 
+        Self::from_inference_model(inference_model, model_path)
+    }
+
+    /// Loads a detection model from a byte slice.
+    ///
+    /// This method is useful for WASM environments where file system access
+    /// is not available.
+    pub fn load_from_bytes(bytes: &[u8]) -> Result<Self, OcrError> {
+        println!("[DetInfer] Loading detection model from bytes");
+
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut inference_model = tract_onnx::onnx()
+            .with_ignore_output_shapes(true)
+            .model_for_read(&mut reader)
+            .map_err(|source| OcrError::ModelLoad {
+                source,
+                path: std::path::PathBuf::from("<bytes>"),
+            })?;
+
+        Self::from_inference_model(inference_model, std::path::Path::new("<bytes>"))
+    }
+
+    fn from_inference_model(
+        mut inference_model: InferenceModel,
+        path: &Path,
+    ) -> Result<Self, OcrError> {
         let height = inference_model.symbol_table.sym("height");
         let width = inference_model.symbol_table.sym("width");
         inference_model
@@ -44,7 +71,7 @@ impl TractDetSession {
             )
             .map_err(|source| OcrError::ModelLoad {
                 source,
-                path: model_path.to_path_buf(),
+                path: path.to_path_buf(),
             })?;
 
         println!("[DetInfer] Detection model prepared");
@@ -172,6 +199,32 @@ impl TractRecSession {
                 path: model_path.to_path_buf(),
             })?;
 
+        Self::from_inference_model(inference_model, model_path)
+    }
+
+    /// Loads a recognition model from a byte slice.
+    ///
+    /// This method is useful for WASM environments where file system access
+    /// is not available.
+    pub fn load_from_bytes(bytes: &[u8]) -> Result<Self, OcrError> {
+        println!("[RecInfer] Loading recognition model from bytes");
+
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut inference_model = tract_onnx::onnx()
+            .with_ignore_output_shapes(true)
+            .model_for_read(&mut reader)
+            .map_err(|source| OcrError::ModelLoad {
+                source,
+                path: std::path::PathBuf::from("<bytes>"),
+            })?;
+
+        Self::from_inference_model(inference_model, std::path::Path::new("<bytes>"))
+    }
+
+    fn from_inference_model(
+        mut inference_model: InferenceModel,
+        path: &Path,
+    ) -> Result<Self, OcrError> {
         let batch = inference_model.symbol_table.sym("batch");
         let width = inference_model.symbol_table.sym("width");
         inference_model
@@ -184,7 +237,7 @@ impl TractRecSession {
             )
             .map_err(|source| OcrError::ModelLoad {
                 source,
-                path: model_path.to_path_buf(),
+                path: path.to_path_buf(),
             })?;
 
         println!("[RecInfer] Recognition model prepared");

@@ -17,8 +17,32 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tract_onnx::prelude::TractError;
+
+// WASM-compatible time measurement
+#[cfg(target_arch = "wasm32")]
+mod wasm_time {
+    use std::time::Duration;
+    
+    pub struct Instant;
+    
+    impl Instant {
+        pub fn now() -> Self {
+            Instant
+        }
+        
+        pub fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+type WasmInstant = wasm_time::Instant;
+
+#[cfg(not(target_arch = "wasm32"))]
+type WasmInstant = std::time::Instant;
 
 /// Errors that can occur while building or using the OCR engine.
 #[derive(Debug)]
@@ -355,7 +379,7 @@ pub struct OcrRunWithMetrics {
 }
 
 impl OcrEngine {
-    fn new(
+    pub(crate) fn new(
         det_model_path: PathBuf,
         rec_model_path: PathBuf,
         dictionary_path: PathBuf,
@@ -403,9 +427,9 @@ impl OcrEngine {
         &self,
         path: P,
     ) -> Result<OcrRunWithMetrics, OcrError> {
-        let overall_start = Instant::now();
+        let overall_start = WasmInstant::now();
         let path_ref = path.as_ref();
-        let decode_start = Instant::now();
+        let decode_start = WasmInstant::now();
         let image = image::open(path_ref).map_err(|source| OcrError::ImageDecode {
             source,
             path: path_ref.to_path_buf(),
@@ -458,7 +482,7 @@ impl OcrEngine {
         &self,
         image: &DynamicImage,
     ) -> Result<OcrRunWithMetrics, OcrError> {
-        let pipeline_start = Instant::now();
+        let pipeline_start = WasmInstant::now();
         let mut timings = OcrTimings::new();
         let image_dims = image.dimensions();
 
@@ -877,15 +901,15 @@ impl DetectionPipeline {
         image: &DynamicImage,
         image_dims: (u32, u32),
     ) -> Result<(Vec<Polygon<f64>>, StageTimings), OcrError> {
-        let preprocess_start = Instant::now();
+        let preprocess_start = WasmInstant::now();
         let preprocessed = self.preprocessor.process(image).map_err(OcrError::from)?;
         let preprocess_elapsed = preprocess_start.elapsed();
 
-        let inference_start = Instant::now();
+        let inference_start = WasmInstant::now();
         let inference = self.session.run(&preprocessed)?;
         let inference_elapsed = inference_start.elapsed();
 
-        let post_start = Instant::now();
+        let post_start = WasmInstant::now();
         let contours = self
             .postprocessor
             .process(&inference)
@@ -943,18 +967,18 @@ impl RecognitionPipeline {
         image: &DynamicImage,
         regions: &[RecTextRegion],
     ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
-        let preprocess_start = Instant::now();
+        let preprocess_start = WasmInstant::now();
         let batch = self
             .preprocessor
             .process(image, regions)
             .map_err(OcrError::from)?;
         let preprocess_elapsed = preprocess_start.elapsed();
 
-        let inference_start = Instant::now();
+        let inference_start = WasmInstant::now();
         let inference = self.session.run(&batch)?;
         let inference_elapsed = inference_start.elapsed();
 
-        let post_start = Instant::now();
+        let post_start = WasmInstant::now();
         let sequences = self
             .postprocessor
             .process(&inference)

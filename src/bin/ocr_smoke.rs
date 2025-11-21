@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use pure_onnx_ocr::{Backend, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings};
+use pure_onnx_ocr::{
+    Backend, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings,
+};
 
 const DEFAULT_DET_MODEL: &str = "models/ppocrv5/det.onnx";
 const DEFAULT_REC_MODEL: &str = "models/ppocrv5/rec.onnx";

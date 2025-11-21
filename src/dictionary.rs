@@ -76,7 +76,28 @@ impl RecDictionary {
             source,
             path: path.to_path_buf(),
         })?;
+        Self::from_str(&contents, Some(path))
+    }
 
+    /// Loads a dictionary from a UTF-8 encoded byte slice.
+    ///
+    /// Each non-empty line is treated as a token. Lines containing only
+    /// whitespace are ignored. Duplicate tokens result in an error.
+    ///
+    /// This method is useful for WASM environments where file system access
+    /// is not available.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DictionaryError> {
+        let contents = std::str::from_utf8(bytes).map_err(|_| DictionaryError::Io {
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dictionary bytes are not valid UTF-8",
+            ),
+            path: PathBuf::from("<bytes>"),
+        })?;
+        Self::from_str(contents, None)
+    }
+
+    fn from_str(contents: &str, path: Option<&Path>) -> Result<Self, DictionaryError> {
         let mut tokens = Vec::new();
         let mut reverse = HashMap::new();
 
@@ -104,7 +125,9 @@ impl RecDictionary {
 
             if reverse.contains_key(token) {
                 return Err(DictionaryError::DuplicateEntry {
-                    path: path.to_path_buf(),
+                    path: path
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("<bytes>")),
                     line_number: line_number + 1,
                     token: token.to_string(),
                 });
@@ -118,7 +141,9 @@ impl RecDictionary {
 
         if tokens.len() == 1 {
             return Err(DictionaryError::EmptyDictionary {
-                path: path.to_path_buf(),
+                path: path
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("<bytes>")),
             });
         }
 
@@ -256,6 +281,45 @@ mod tests {
         assert_eq!(dictionary.token(0), Some("blank"));
         assert_eq!(dictionary.token(1), Some("first"));
         assert_eq!(dictionary.token(2), Some("second"));
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn from_bytes_loads_dictionary_successfully() {
+        let bytes = b"a\n\nb\n c \n# comment-like text should still be taken literally\n";
+        let dictionary = RecDictionary::from_bytes(bytes).unwrap();
+
+        assert_eq!(dictionary.len(), 5);
+        assert_eq!(dictionary.blank_id(), 0);
+        assert_eq!(dictionary.blank_token(), "blank");
+        assert_eq!(dictionary.token(0), Some("blank"));
+        assert_eq!(dictionary.token(1), Some("a"));
+        assert_eq!(dictionary.token(2), Some("b"));
+        assert_eq!(dictionary.token(3), Some("c"));
+        assert_eq!(
+            dictionary.token(4),
+            Some("# comment-like text should still be taken literally")
+        );
+        assert_eq!(dictionary.index_of("blank"), Some(0));
+        assert_eq!(dictionary.index_of("c"), Some(3));
+        assert!(dictionary.index_of("missing").is_none());
+    }
+
+    #[test]
+    fn from_bytes_and_from_path_produce_same_result() {
+        let path = unique_temp_file("dict_compare");
+        let content = "first\nsecond\nthird\n";
+        fs::write(&path, content).unwrap();
+
+        let dict_from_path = RecDictionary::from_path(&path).unwrap();
+        let dict_from_bytes = RecDictionary::from_bytes(content.as_bytes()).unwrap();
+
+        assert_eq!(dict_from_path.len(), dict_from_bytes.len());
+        assert_eq!(dict_from_path.blank_id(), dict_from_bytes.blank_id());
+        for i in 0..dict_from_path.len() {
+            assert_eq!(dict_from_path.token(i), dict_from_bytes.token(i));
+        }
 
         fs::remove_file(path).ok();
     }

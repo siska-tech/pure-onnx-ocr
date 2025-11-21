@@ -19,6 +19,9 @@ pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
 
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
 /// Re-export of the CTC decoding utilities so applications can customise
 /// post-processing while keeping consistent types.
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
