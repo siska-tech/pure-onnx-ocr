@@ -1,4 +1,4 @@
-use crate::detection::DetInferenceOutput;
+use crate::inference::DetInferenceOutput;
 use geo_types::{Coord, LineString, Polygon};
 use i_overlay::float::overlay::OverlayOptions;
 use i_overlay::mesh::outline::offset::OutlineOffset;

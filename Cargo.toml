@@ -20,6 +20,13 @@ i_overlay = "4.1.1"
 geo-types = "=0.7.12"
 image = "0.25"
 imageproc = "0.25.0"
+wonnx = { version = "0.5.1", optional = true }
+pollster = { version = "0.3", optional = true }
+wgpu = { version = "0.16", optional = true }
+
+[features]
+default = []
+gpu = ["wonnx", "pollster", "wgpu"]
 
 [dev-dependencies]
 once_cell = "1.21"

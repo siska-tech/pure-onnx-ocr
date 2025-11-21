@@ -14,6 +14,7 @@ pub mod ctc;
 pub mod detection;
 pub mod dictionary;
 pub mod engine;
+pub mod inference;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
@@ -26,7 +27,7 @@ pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
 /// High-level façade providing an ergonomic OCR API.
 pub use engine::{
-    OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
+    Backend, OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
     OcrTimings, StageTimings,
 };
 /// Geometry primitives surfaced at the crate root for convenience.

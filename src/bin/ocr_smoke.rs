@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings};
+use pure_onnx_ocr::{Backend, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings};
 
 const DEFAULT_DET_MODEL: &str = "models/ppocrv5/det.onnx";
 const DEFAULT_REC_MODEL: &str = "models/ppocrv5/rec.onnx";
@@ -32,7 +32,8 @@ fn run() -> Result<(), RunError> {
     let mut builder = OcrEngineBuilder::new()
         .det_model_path(&cli.det_model)
         .rec_model_path(&cli.rec_model)
-        .dictionary_path(&cli.dictionary);
+        .dictionary_path(&cli.dictionary)
+        .backend(cli.backend);
 
     if let Some(limit) = cli.det_limit_side_len {
         builder = builder.det_limit_side_len(limit);
@@ -68,6 +69,7 @@ fn run() -> Result<(), RunError> {
     println!("Recognition model: {}", engine.rec_model_path().display());
     println!("Dictionary: {}", engine.dictionary_path().display());
     println!("Recognition batch size: {}", engine.rec_batch_size());
+    println!("Backend: {:?}", cli.backend);
     println!("Total time: {:.3} seconds", total_duration.as_secs_f64());
 
     if results.is_empty() {
@@ -116,6 +118,7 @@ struct Cli {
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
     benchmark: bool,
+    backend: Backend,
     show_help: bool,
 }
 
@@ -137,6 +140,7 @@ impl Cli {
             det_unclip_ratio: None,
             rec_batch_size: None,
             benchmark: false,
+            backend: Backend::Auto,
             show_help: false,
         };
 
@@ -195,6 +199,20 @@ impl Cli {
                 "--benchmark" => {
                     cli.benchmark = true;
                 }
+                "--backend" => {
+                    let value = next_value("--backend", &mut iter)?;
+                    cli.backend = match value.as_str() {
+                        "cpu" => Backend::Cpu,
+                        "gpu" => Backend::Gpu,
+                        "auto" => Backend::Auto,
+                        _ => {
+                            return Err(RunError::cli(format!(
+                                "invalid value for --backend: `{}` (expected: cpu, gpu, or auto)",
+                                value
+                            )));
+                        }
+                    };
+                }
                 other if other.starts_with('-') => {
                     return Err(RunError::cli(format!("unknown option `{}`", other)));
                 }
@@ -245,6 +263,7 @@ impl Cli {
         text.push_str("      --det-unclip-ratio R      Override detection polygon unclip ratio\n");
         text.push_str("      --rec-batch-size N        Override recognition batch size (> 0)\n");
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
+        text.push_str("      --backend BACKEND         Inference backend: cpu, gpu, or auto (default: auto)\n");
         text
     }
 }

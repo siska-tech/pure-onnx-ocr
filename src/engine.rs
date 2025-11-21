@@ -1,6 +1,6 @@
 use crate::ctc::DecodedSequence;
-use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
+use crate::inference::{DetInference, RecInference, TractDetSession, TractRecSession};
 use crate::postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
@@ -9,9 +9,7 @@ use crate::preprocessing::{
     DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
     RecPreProcessorConfig, RecPreProcessorError, RecTextRegion,
 };
-use crate::recognition::{
-    RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
-};
+use crate::recognition::{RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError};
 use geo_types::Polygon;
 use image::{DynamicImage, GenericImageView, ImageError};
 use std::error::Error;
@@ -57,6 +55,12 @@ pub enum OcrError {
         detection_regions: usize,
         recognition_results: usize,
     },
+    /// GPU initialization failed.
+    #[cfg(feature = "gpu")]
+    GpuInit(String),
+    /// GPU inference failed.
+    #[cfg(feature = "gpu")]
+    GpuInference(String),
 }
 
 impl fmt::Display for OcrError {
@@ -102,6 +106,10 @@ impl fmt::Display for OcrError {
                 "pipeline mismatch: detection produced {} regions but recognition returned {} results",
                 detection_regions, recognition_results
             ),
+            #[cfg(feature = "gpu")]
+            OcrError::GpuInit(msg) => write!(f, "GPU initialization failed: {}", msg),
+            #[cfg(feature = "gpu")]
+            OcrError::GpuInference(msg) => write!(f, "GPU inference failed: {}", msg),
         }
     }
 }
@@ -239,6 +247,10 @@ impl Error for OcrError {
             OcrError::RecognitionInference { .. } => None,
             OcrError::RecognitionPostProcess { source } => Some(source),
             OcrError::PipelineMismatch { .. } => None,
+            #[cfg(feature = "gpu")]
+            OcrError::GpuInit(_) => None,
+            #[cfg(feature = "gpu")]
+            OcrError::GpuInference(_) => None,
         }
     }
 }
@@ -347,15 +359,14 @@ impl OcrEngine {
         det_model_path: PathBuf,
         rec_model_path: PathBuf,
         dictionary_path: PathBuf,
-        det_session: DetInferenceSession,
-        rec_session: RecInferenceSession,
+        det_session: Arc<dyn DetInference>,
+        rec_session: Arc<dyn RecInference>,
         dictionary: RecDictionary,
         config: OcrEngineConfig,
     ) -> Self {
         let assets = EngineAssets::new(det_model_path, rec_model_path, dictionary_path);
+        let dictionary = Arc::new(dictionary);
 
-        let det_session = Arc::new(det_session);
-        let rec_session = Arc::new(rec_session);
         let dictionary = Arc::new(dictionary);
 
         let detection = DetectionPipeline::new(
@@ -492,6 +503,18 @@ impl OcrEngine {
     }
 }
 
+/// Backend selection for OCR inference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// Use CPU inference with `tract-onnx`.
+    Cpu,
+    /// Use GPU inference with `wonnx` (wgpu).
+    Gpu,
+    /// Automatically select the best available backend.
+    /// Falls back to CPU if GPU is not available.
+    Auto,
+}
+
 /// Builder for constructing [`OcrEngine`] instances.
 #[derive(Debug, Clone)]
 pub struct OcrEngineBuilder {
@@ -501,6 +524,7 @@ pub struct OcrEngineBuilder {
     det_limit_side_len: u32,
     det_unclip_ratio: f32,
     rec_batch_size: usize,
+    backend: Backend,
 }
 
 impl Default for OcrEngineBuilder {
@@ -512,6 +536,7 @@ impl Default for OcrEngineBuilder {
             det_limit_side_len: DetPreProcessorConfig::default().limit_side_len,
             det_unclip_ratio: DetPolygonUnclipperConfig::default().unclip_ratio,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
+            backend: Backend::Auto,
         }
     }
 }
@@ -558,8 +583,30 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Sets the backend for inference.
+    /// Default is `Backend::Auto`, which automatically selects the best available backend.
+    pub fn backend(mut self, backend: Backend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Checks if GPU is available for inference.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn is_gpu_available_static() -> bool {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::default();
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+                .is_some()
+        })
+    }
+
     /// Consumes the builder and attempts to construct an [`OcrEngine`].
     pub fn build(self) -> Result<OcrEngine, OcrError> {
+        // Determine the effective backend to use before moving self fields
+        let effective_backend = self.detect_best_backend();
+
         let det_model_path = self.det_model_path.ok_or(OcrError::MissingField {
             field: "det_model_path",
         })?;
@@ -580,28 +627,161 @@ impl OcrEngineBuilder {
         verify_file_exists(&rec_model_path)?;
         verify_file_exists(&dictionary_path)?;
 
-        let det_session =
-            DetInferenceSession::load(&det_model_path).map_err(|source| OcrError::ModelLoad {
-                source,
-                path: det_model_path.clone(),
-            })?;
-        let rec_session =
-            RecInferenceSession::load(&rec_model_path).map_err(|source| OcrError::ModelLoad {
-                source,
-                path: rec_model_path.clone(),
-            })?;
+        // Store backend and config before moving self
+        let backend = self.backend;
+        let det_unclip_ratio = self.det_unclip_ratio;
+        let det_limit_side_len = self.det_limit_side_len;
+        let rec_batch_size = self.rec_batch_size;
+
+        // Try to build with the selected backend, with fallback for Auto mode
+        match effective_backend {
+            Backend::Cpu => Self::build_cpu_engine(
+                det_model_path,
+                rec_model_path,
+                dictionary_path,
+                det_unclip_ratio,
+                det_limit_side_len,
+                rec_batch_size,
+            ),
+            #[cfg(feature = "gpu")]
+            Backend::Gpu => {
+                match Self::build_gpu_engine(
+                    det_model_path.clone(),
+                    rec_model_path.clone(),
+                    dictionary_path.clone(),
+                    det_unclip_ratio,
+                    det_limit_side_len,
+                    rec_batch_size,
+                ) {
+                    Ok(engine) => Ok(engine),
+                    Err(e) => {
+                        // If GPU initialization fails and we're in Auto mode, fall back to CPU
+                        if matches!(backend, Backend::Auto) {
+                            eprintln!("[OcrEngineBuilder] GPU initialization failed: {}. Falling back to CPU.", e);
+                            Self::build_cpu_engine(
+                                det_model_path,
+                                rec_model_path,
+                                dictionary_path,
+                                det_unclip_ratio,
+                                det_limit_side_len,
+                                rec_batch_size,
+                            )
+                        } else {
+                            Err(e)
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "gpu"))]
+            Backend::Gpu => Err(OcrError::InvalidConfiguration {
+                message: "GPU backend is not available. Please build with '--features gpu' or use Backend::Cpu or Backend::Auto.".to_string(),
+            }),
+            Backend::Auto => {
+                // This should never be reached due to detect_best_backend logic
+                unreachable!("Auto backend should be resolved to Cpu or Gpu")
+            }
+        }
+    }
+
+    /// Detects the best available backend based on the builder configuration.
+    fn detect_best_backend(&self) -> Backend {
+        match self.backend {
+            Backend::Cpu => Backend::Cpu,
+            Backend::Gpu => {
+                #[cfg(feature = "gpu")]
+                {
+                    if Self::is_gpu_available_static() {
+                        Backend::Gpu
+                    } else {
+                        // If GPU is explicitly requested but not available, return Gpu anyway
+                        // The build method will handle the error or fallback
+                        Backend::Gpu
+                    }
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    Backend::Gpu // Will error in build()
+                }
+            }
+            Backend::Auto => {
+                #[cfg(feature = "gpu")]
+                {
+                    if Self::is_gpu_available_static() {
+                        Backend::Gpu
+                    } else {
+                        Backend::Cpu
+                    }
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    Backend::Cpu
+                }
+            }
+        }
+    }
+
+    /// Builds an OCR engine using CPU backend.
+    fn build_cpu_engine(
+        det_model_path: PathBuf,
+        rec_model_path: PathBuf,
+        dictionary_path: PathBuf,
+        det_unclip_ratio: f32,
+        det_limit_side_len: u32,
+        rec_batch_size: usize,
+    ) -> Result<OcrEngine, OcrError> {
+        let det_session: Arc<dyn DetInference> = Arc::new(TractDetSession::load(&det_model_path)?);
+        let rec_session: Arc<dyn RecInference> = Arc::new(TractRecSession::load(&rec_model_path)?);
         let dictionary = RecDictionary::from_path(&dictionary_path)?;
 
         let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
-        det_unclipper_config.unclip_ratio = self.det_unclip_ratio;
+        det_unclipper_config.unclip_ratio = det_unclip_ratio;
 
         let mut det_preprocessor_config = DetPreProcessorConfig::default();
-        det_preprocessor_config.limit_side_len = self.det_limit_side_len;
+        det_preprocessor_config.limit_side_len = det_limit_side_len;
 
         let mut config = OcrEngineConfig::default();
         config.det_preprocessor = det_preprocessor_config;
         config.det_unclipper = det_unclipper_config;
-        config.rec_batch_size = self.rec_batch_size;
+        config.rec_batch_size = rec_batch_size;
+        config.rec_postprocessor.blank_id = dictionary.blank_id();
+
+        Ok(OcrEngine::new(
+            det_model_path,
+            rec_model_path,
+            dictionary_path,
+            det_session,
+            rec_session,
+            dictionary,
+            config,
+        ))
+    }
+
+    /// Builds an OCR engine using GPU backend.
+    #[cfg(feature = "gpu")]
+    fn build_gpu_engine(
+        det_model_path: PathBuf,
+        rec_model_path: PathBuf,
+        dictionary_path: PathBuf,
+        det_unclip_ratio: f32,
+        det_limit_side_len: u32,
+        rec_batch_size: usize,
+    ) -> Result<OcrEngine, OcrError> {
+        use crate::inference::{WonnxDetSession, WonnxRecSession};
+
+        let det_session: Arc<dyn DetInference> = Arc::new(WonnxDetSession::load(&det_model_path)?);
+        let rec_session: Arc<dyn RecInference> = Arc::new(WonnxRecSession::load(&rec_model_path)?);
+        let dictionary = RecDictionary::from_path(&dictionary_path)?;
+
+        let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
+        det_unclipper_config.unclip_ratio = det_unclip_ratio;
+
+        let mut det_preprocessor_config = DetPreProcessorConfig::default();
+        det_preprocessor_config.limit_side_len = det_limit_side_len;
+
+        let mut config = OcrEngineConfig::default();
+        config.det_preprocessor = det_preprocessor_config;
+        config.det_unclipper = det_unclipper_config;
+        config.rec_batch_size = rec_batch_size;
         config.rec_postprocessor.blank_id = dictionary.blank_id();
 
         Ok(OcrEngine::new(
@@ -655,18 +835,29 @@ impl EngineAssets {
     }
 }
 
-#[derive(Debug)]
 struct DetectionPipeline {
     preprocessor: DetPreProcessor,
-    session: Arc<DetInferenceSession>,
+    session: Arc<dyn DetInference>,
     postprocessor: DetPostProcessor,
     unclipper: DetPolygonUnclipper,
     scaler: DetPolygonScaler,
 }
 
+impl std::fmt::Debug for DetectionPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DetectionPipeline")
+            .field("preprocessor", &self.preprocessor)
+            .field("session", &"<inference session>")
+            .field("postprocessor", &self.postprocessor)
+            .field("unclipper", &self.unclipper)
+            .field("scaler", &self.scaler)
+            .finish()
+    }
+}
+
 impl DetectionPipeline {
     fn new(
-        session: Arc<DetInferenceSession>,
+        session: Arc<dyn DetInference>,
         preprocessor: DetPreProcessorConfig,
         postprocessor: DetPostProcessorConfig,
         unclipper: DetPolygonUnclipperConfig,
@@ -691,10 +882,7 @@ impl DetectionPipeline {
         let preprocess_elapsed = preprocess_start.elapsed();
 
         let inference_start = Instant::now();
-        let inference = self
-            .session
-            .run(&preprocessed)
-            .map_err(|source| OcrError::DetectionInference { source })?;
+        let inference = self.session.run(&preprocessed)?;
         let inference_elapsed = inference_start.elapsed();
 
         let post_start = Instant::now();
@@ -718,16 +906,25 @@ impl DetectionPipeline {
     }
 }
 
-#[derive(Debug)]
 struct RecognitionPipeline {
     preprocessor: RecPreProcessor,
-    session: Arc<RecInferenceSession>,
+    session: Arc<dyn RecInference>,
     postprocessor: RecPostProcessor,
+}
+
+impl std::fmt::Debug for RecognitionPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecognitionPipeline")
+            .field("preprocessor", &self.preprocessor)
+            .field("session", &"<inference session>")
+            .field("postprocessor", &self.postprocessor)
+            .finish()
+    }
 }
 
 impl RecognitionPipeline {
     fn new(
-        session: Arc<RecInferenceSession>,
+        session: Arc<dyn RecInference>,
         dictionary: Arc<RecDictionary>,
         preprocessor: RecPreProcessorConfig,
         postprocessor: RecPostProcessorConfig,
@@ -754,10 +951,7 @@ impl RecognitionPipeline {
         let preprocess_elapsed = preprocess_start.elapsed();
 
         let inference_start = Instant::now();
-        let inference = self
-            .session
-            .run(&batch)
-            .map_err(|source| OcrError::RecognitionInference { source })?;
+        let inference = self.session.run(&batch)?;
         let inference_elapsed = inference_start.elapsed();
 
         let post_start = Instant::now();
