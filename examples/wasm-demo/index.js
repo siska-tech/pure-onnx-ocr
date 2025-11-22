@@ -18,6 +18,13 @@ let previewSection;
 let previewImage;
 let previewCanvas;
 let previewLoadingOverlay;
+let loadingText;
+let progressBar;
+let progressText;
+let imageModal;
+let imageModalContent;
+let imageModalCanvas;
+let imageModalClose;
 let ocrBtn;
 let clearBtn;
 let resultSection;
@@ -42,6 +49,13 @@ function initializeDOMElements() {
     previewImage = document.getElementById('previewImage');
     previewCanvas = document.getElementById('previewCanvas');
     previewLoadingOverlay = document.getElementById('previewLoadingOverlay');
+    loadingText = document.getElementById('loadingText');
+    progressBar = document.getElementById('progressBar');
+    progressText = document.getElementById('progressText');
+    imageModal = document.getElementById('imageModal');
+    imageModalContent = document.getElementById('imageModalContent');
+    imageModalCanvas = document.getElementById('imageModalCanvas');
+    imageModalClose = document.getElementById('imageModalClose');
     ocrBtn = document.getElementById('ocrBtn');
     clearBtn = document.getElementById('clearBtn');
     resultSection = document.getElementById('resultSection');
@@ -295,16 +309,26 @@ function setupEventListeners() {
         }
     });
     
-    // Prevent fileInput from interfering with drag and drop
+    // Prevent fileInput and its wrapper from interfering with drag and drop
+    // Allow events to bubble up to uploadSection
+    const fileInputWrapper = fileInput.closest('.file-input-wrapper');
+    if (fileInputWrapper) {
+        fileInputWrapper.addEventListener('dragover', (e) => {
+            // Don't prevent default - let it bubble to uploadSection
+        });
+        
+        fileInputWrapper.addEventListener('drop', (e) => {
+            // Don't prevent default - let it bubble to uploadSection
+        });
+    }
+    
+    // fileInput itself should not interfere
     fileInput.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
+        // Don't prevent default - let it bubble to uploadSection
     });
     
     fileInput.addEventListener('drop', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Let the uploadSection handle the drop
+        // Don't prevent default - let it bubble to uploadSection
     });
     
     // Handle drag and drop on upload section
@@ -316,10 +340,19 @@ function setupEventListeners() {
     });
 
     uploadSection.addEventListener('dragleave', (e) => {
-        console.log('Drag leave event fired');
-        e.preventDefault();
-        e.stopPropagation();
-        uploadSection.classList.remove('dragover');
+        // Only remove dragover class if we're actually leaving the uploadSection
+        // (not just moving to a child element)
+        const rect = uploadSection.getBoundingClientRect();
+        const x = e.clientX;
+        const y = e.clientY;
+        
+        // Check if we're still within the uploadSection bounds
+        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+            console.log('Drag leave event fired - actually leaving section');
+            e.preventDefault();
+            e.stopPropagation();
+            uploadSection.classList.remove('dragover');
+        }
     });
 
     uploadSection.addEventListener('drop', async (e) => {
@@ -369,6 +402,10 @@ function setupEventListeners() {
             // Show loading overlay on preview
             if (previewLoadingOverlay && previewSection && !previewSection.classList.contains('hidden')) {
                 previewLoadingOverlay.classList.remove('hidden');
+                // Reset progress
+                if (progressBar) progressBar.style.width = '0%';
+                if (progressText) progressText.textContent = '初期化中...';
+                if (loadingText) loadingText.textContent = 'OCR処理中...';
             }
             
             // Add processing class to body to prevent interactions
@@ -388,9 +425,34 @@ function setupEventListeners() {
             // Use requestAnimationFrame to ensure UI is updated
             await new Promise(resolve => requestAnimationFrame(resolve));
             
+            // Simulate progress updates (since WASM execution is synchronous)
+            // We'll update progress before and after the actual OCR execution
+            const updateProgress = (percent, text) => {
+                if (progressBar) progressBar.style.width = `${percent}%`;
+                if (progressText) progressText.textContent = text;
+            };
+            
+            // Start progress simulation
+            updateProgress(10, '画像を読み込んでいます...');
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            updateProgress(20, '前処理を実行しています...');
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            updateProgress(40, 'テキスト検出を実行しています...');
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            updateProgress(60, 'テキスト認識を実行しています...');
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            updateProgress(80, '後処理を実行しています...');
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
             // Run OCR - this will block the UI thread, but at least the loading state is visible
             const imageArray = new Uint8Array(currentImageBytes);
             const resultJson = engine.run_from_bytes(imageArray);
+            
+            updateProgress(100, '完了！');
             
             const results = JSON.parse(resultJson);
             currentOcrResults = results; // Store results for redrawing
@@ -474,6 +536,11 @@ function setupEventListeners() {
                 }
             }
             
+            // Close modal if open
+            if (imageModal) {
+                imageModal.classList.remove('show');
+            }
+            
             updateButtonStates();
             
             if (modelSource === 'fetch') {
@@ -482,6 +549,288 @@ function setupEventListeners() {
                 showStatus('モデルファイルと画像をクリアしました。', 'info');
             }
         });
+    }
+    
+    // Image modal functionality
+    if (previewImage && imageModal && imageModalContent && imageModalClose) {
+        // Click on preview image to open modal
+        previewImage.addEventListener('click', () => {
+            if (previewImage.src && previewImage.src !== '') {
+                openImageModal();
+            }
+        });
+        
+        // Close modal when clicking on close button
+        imageModalClose.addEventListener('click', closeImageModal);
+        
+        // Close modal when clicking on background
+        imageModal.addEventListener('click', (e) => {
+            if (e.target === imageModal) {
+                closeImageModal();
+            }
+        });
+        
+        // Close modal with ESC key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && imageModal.classList.contains('show')) {
+                closeImageModal();
+            }
+        });
+    }
+}
+
+// Open image modal with full-size image and canvas overlay
+function openImageModal() {
+    if (!imageModal || !imageModalContent || !previewImage || !previewImage.src) return;
+    
+    imageModalContent.src = previewImage.src;
+    imageModal.classList.add('show');
+    document.body.style.overflow = 'hidden';
+    
+    // Wait for image to load, then setup canvas
+    const setupModalCanvas = () => {
+        if (!imageModalCanvas || !imageModalContent) return;
+        
+        // Set canvas size to match image display size in modal
+        const rect = imageModalContent.getBoundingClientRect();
+        imageModalCanvas.width = rect.width;
+        imageModalCanvas.height = rect.height;
+        
+        // Position canvas to match image
+        imageModalCanvas.style.width = `${rect.width}px`;
+        imageModalCanvas.style.height = `${rect.height}px`;
+        
+        if (currentOcrResults && currentOcrResults.length > 0) {
+            // Draw polygons on modal canvas
+            drawPolygonsOnModalCanvas(currentOcrResults, imageModalContent, imageModalCanvas);
+        } else {
+            // Clear canvas if no results
+            const ctx = imageModalCanvas.getContext('2d');
+            if (ctx) {
+                ctx.clearRect(0, 0, imageModalCanvas.width, imageModalCanvas.height);
+            }
+        }
+    };
+    
+    imageModalContent.onload = () => {
+        // Use a small delay to ensure image is rendered
+        setTimeout(setupModalCanvas, 50);
+        
+        // Also update on window resize
+        const resizeHandler = () => {
+            if (imageModal && imageModal.classList.contains('show')) {
+                setupModalCanvas();
+            }
+        };
+        window.addEventListener('resize', resizeHandler);
+    };
+    
+    // If image is already loaded
+    if (imageModalContent.complete) {
+        imageModalContent.onload();
+    }
+}
+
+// Draw polygons on modal canvas at full size
+function drawPolygonsOnModalCanvas(results, img, canvas) {
+    if (!canvas || !img || !results || results.length === 0) return;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Calculate scale factors based on image display size vs natural size
+    const imgNaturalWidth = img.naturalWidth;
+    const imgNaturalHeight = img.naturalHeight;
+    const imgDisplayWidth = img.offsetWidth || canvas.width;
+    const imgDisplayHeight = img.offsetHeight || canvas.height;
+    
+    const scaleX = imgDisplayWidth / imgNaturalWidth;
+    const scaleY = imgDisplayHeight / imgNaturalHeight;
+    
+    // Draw each polygon
+    results.forEach((result, index) => {
+        if (!result.bounding_box) return;
+        
+        let boundingBox = result.bounding_box;
+        if (!Array.isArray(boundingBox) || boundingBox.length === 0) return;
+        
+        // Use different colors for each polygon
+        const hue = (index * 137.5) % 360;
+        ctx.strokeStyle = `hsl(${hue}, 70%, 50%)`;
+        ctx.fillStyle = `hsla(${hue}, 70%, 50%, 0.2)`;
+        ctx.lineWidth = 3; // Thicker lines for full size
+        
+        // Draw outer ring
+        const outerRing = boundingBox[0];
+        if (!Array.isArray(outerRing) || outerRing.length === 0) return;
+        
+        ctx.beginPath();
+        const firstPoint = outerRing[0];
+        const firstX = (typeof firstPoint === 'object' && 'x' in firstPoint) ? firstPoint.x : (Array.isArray(firstPoint) ? firstPoint[0] : null);
+        const firstY = (typeof firstPoint === 'object' && 'y' in firstPoint) ? firstPoint.y : (Array.isArray(firstPoint) ? firstPoint[1] : null);
+        
+        if (firstX !== null && firstY !== null) {
+            ctx.moveTo(firstX * scaleX, firstY * scaleY);
+            
+            for (let i = 1; i < outerRing.length; i++) {
+                const point = outerRing[i];
+                const x = (typeof point === 'object' && 'x' in point) ? point.x : (Array.isArray(point) ? point[0] : null);
+                const y = (typeof point === 'object' && 'y' in point) ? point.y : (Array.isArray(point) ? point[1] : null);
+                if (x !== null && y !== null) {
+                    ctx.lineTo(x * scaleX, y * scaleY);
+                }
+            }
+            
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            
+            // Draw text label
+            if (result.text) {
+                let sumX = 0, sumY = 0;
+                let validPoints = 0;
+                for (const point of outerRing) {
+                    const x = (typeof point === 'object' && 'x' in point) ? point.x : (Array.isArray(point) ? point[0] : null);
+                    const y = (typeof point === 'object' && 'y' in point) ? point.y : (Array.isArray(point) ? point[1] : null);
+                    if (x !== null && y !== null) {
+                        sumX += x;
+                        sumY += y;
+                        validPoints++;
+                    }
+                }
+                
+                if (validPoints > 0) {
+                    const centerX = (sumX / validPoints) * scaleX;
+                    const centerY = (sumY / validPoints) * scaleY;
+                    
+                    ctx.fillStyle = `hsl(${hue}, 70%, 50%)`;
+                    ctx.font = 'bold 24px sans-serif'; // Larger font for full size
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(result.text, centerX, centerY);
+                }
+            }
+        }
+        
+        // Draw inner rings (holes) if any
+        for (let i = 1; i < boundingBox.length; i++) {
+            const innerRing = boundingBox[i];
+            if (!Array.isArray(innerRing) || innerRing.length === 0) continue;
+            
+            ctx.beginPath();
+            const firstPoint = innerRing[0];
+            const firstX = (typeof firstPoint === 'object' && 'x' in firstPoint) ? firstPoint.x : (Array.isArray(firstPoint) ? firstPoint[0] : null);
+            const firstY = (typeof firstPoint === 'object' && 'y' in firstPoint) ? firstPoint.y : (Array.isArray(firstPoint) ? firstPoint[1] : null);
+            
+            if (firstX !== null && firstY !== null) {
+                ctx.moveTo(firstX * scaleX, firstY * scaleY);
+                
+                for (let j = 1; j < innerRing.length; j++) {
+                    const point = innerRing[j];
+                    const x = (typeof point === 'object' && 'x' in point) ? point.x : (Array.isArray(point) ? point[0] : null);
+                    const y = (typeof point === 'object' && 'y' in point) ? point.y : (Array.isArray(point) ? point[1] : null);
+                    if (x !== null && y !== null) {
+                        ctx.lineTo(x * scaleX, y * scaleY);
+                    }
+                }
+                
+                ctx.closePath();
+                ctx.stroke();
+            }
+        }
+    });
+}
+
+// Close image modal
+function closeImageModal() {
+    if (imageModal) {
+        imageModal.classList.remove('show');
+        document.body.style.overflow = ''; // Restore scrolling
+    }
+}
+
+// Setup hover zoom effect for preview image
+function setupImageHoverZoom() {
+    if (!previewImage) return;
+    
+    const container = previewImage.closest('.preview-container');
+    if (!container) return;
+    
+    // Remove existing event listeners by cloning
+    const newImage = previewImage.cloneNode(true);
+    previewImage.parentNode.replaceChild(newImage, previewImage);
+    previewImage = newImage;
+    
+    // Check if image is larger than container (needs zoom)
+    const checkIfZoomable = () => {
+        if (!previewImage.complete) return false;
+        const imgNaturalWidth = previewImage.naturalWidth;
+        const imgNaturalHeight = previewImage.naturalHeight;
+        const imgDisplayWidth = previewImage.offsetWidth;
+        const imgDisplayHeight = previewImage.offsetHeight;
+        return imgNaturalWidth > imgDisplayWidth || imgNaturalHeight > imgDisplayHeight;
+    };
+    
+    let isZoomable = false;
+    previewImage.addEventListener('load', () => {
+        isZoomable = checkIfZoomable();
+        if (!isZoomable) {
+            previewImage.style.cursor = 'pointer'; // Still allow click for modal
+        }
+    });
+    
+    // Add mousemove event for zoom effect
+    let zoomTimeout;
+    container.addEventListener('mousemove', (e) => {
+        if (!previewImage.complete || !isZoomable) return;
+        
+        clearTimeout(zoomTimeout);
+        const rect = container.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        
+        // Apply zoom to both image and canvas
+        const transform = 'scale(1.8)';
+        const transformOrigin = `${x}% ${y}%`;
+        
+        previewImage.style.transformOrigin = transformOrigin;
+        previewImage.style.transform = transform;
+        previewImage.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.3)';
+        
+        if (previewCanvas) {
+            previewCanvas.style.transformOrigin = transformOrigin;
+            previewCanvas.style.transform = transform;
+        }
+    });
+    
+    container.addEventListener('mouseleave', () => {
+        clearTimeout(zoomTimeout);
+        zoomTimeout = setTimeout(() => {
+            if (previewImage) {
+                previewImage.style.transform = 'scale(1)';
+                previewImage.style.transformOrigin = 'center center';
+                previewImage.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1)';
+            }
+            if (previewCanvas) {
+                previewCanvas.style.transform = 'scale(1)';
+                previewCanvas.style.transformOrigin = 'center center';
+            }
+        }, 100);
+    });
+    
+    // Re-attach click event for modal
+    previewImage.addEventListener('click', () => {
+        if (previewImage.src && previewImage.src !== '') {
+            openImageModal();
+        }
+    });
+    
+    // Initial check
+    if (previewImage.complete) {
+        isZoomable = checkIfZoomable();
     }
 }
 
@@ -520,7 +869,11 @@ async function handleImageFile(file) {
                     }
                 };
                 
-                previewImage.onload = setupCanvas;
+                previewImage.onload = () => {
+                    setupCanvas();
+                    // Setup hover zoom after image is loaded
+                    setupImageHoverZoom();
+                };
                 
                 // Also update on window resize
                 const resizeHandler = () => {
@@ -533,6 +886,11 @@ async function handleImageFile(file) {
                     }
                 };
                 window.addEventListener('resize', resizeHandler);
+            } else {
+                // If canvas is not available, still setup hover zoom
+                previewImage.onload = () => {
+                    setupImageHoverZoom();
+                };
             }
             
             console.log('Preview created');

@@ -292,6 +292,102 @@
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             display: block;
+            cursor: zoom-in;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+        }
+
+        /* Zoom lens effect on hover - handled by JavaScript */
+        .preview-container {
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Modal for full-size image */
+        .image-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            cursor: zoom-out;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .image-modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .image-modal-container {
+            position: relative;
+            max-width: 90%;
+            max-height: 90%;
+            display: inline-block;
+        }
+
+        .image-modal-content {
+            max-width: 90vw;
+            max-height: 90vh;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            animation: zoomIn 0.3s ease;
+            display: block;
+        }
+
+        .image-modal-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 8px;
+            pointer-events: none;
+            animation: zoomIn 0.3s ease;
+        }
+
+        @keyframes zoomIn {
+            from { transform: scale(0.8); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+
+        .image-modal-close {
+            position: absolute;
+            top: 20px;
+            right: 35px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.3s ease;
+        }
+
+        .image-modal-close:hover {
+            opacity: 0.7;
+        }
+
+        .image-modal-info {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 14px;
         }
 
         .preview-section canvas {
@@ -302,6 +398,7 @@
             max-height: 400px;
             border-radius: 8px;
             pointer-events: none;
+            transition: transform 0.3s ease;
         }
 
         .preview-loading-overlay {
@@ -314,8 +411,17 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            flex-direction: column;
             border-radius: 8px;
             z-index: 10;
+        }
+
+        .preview-loading-overlay > div {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
         }
 
         .preview-loading-overlay.hidden {
@@ -341,6 +447,37 @@
             font-size: 16px;
             font-weight: 600;
             margin-top: 15px;
+            text-align: center;
+            width: 100%;
+        }
+
+        .progress-bar-container {
+            width: 80%;
+            max-width: 300px;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            margin-top: 15px;
+            overflow: hidden;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .progress-text {
+            color: white;
+            font-size: 14px;
+            margin-top: 10px;
+            opacity: 0.9;
+            text-align: center;
+            width: 100%;
         }
 
         /* Prevent user interaction during processing */
@@ -462,9 +599,13 @@
                     <img id="previewImage" alt="Preview" />
                     <canvas id="previewCanvas"></canvas>
                     <div class="preview-loading-overlay hidden" id="previewLoadingOverlay">
-                        <div style="text-align: center;">
+                        <div>
                             <div class="spinner"></div>
-                            <div class="loading-text">OCR処理中...</div>
+                            <div class="loading-text" id="loadingText">OCR処理中...</div>
+                            <div class="progress-bar-container">
+                                <div class="progress-bar" id="progressBar"></div>
+                            </div>
+                            <div class="progress-text" id="progressText">初期化中...</div>
                         </div>
                     </div>
                 </div>
@@ -504,6 +645,16 @@
 
             <div id="statusMessage"></div>
         </div>
+    </div>
+
+    <!-- Image Modal -->
+    <div class="image-modal" id="imageModal">
+        <span class="image-modal-close" id="imageModalClose">&times;</span>
+        <div class="image-modal-container">
+            <img class="image-modal-content" id="imageModalContent" alt="Full size image" />
+            <canvas class="image-modal-canvas" id="imageModalCanvas"></canvas>
+        </div>
+        <div class="image-modal-info">ESCキーまたはクリックで閉じる</div>
     </div>
 
     <script type="module" src="index.js"></script>
