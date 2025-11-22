@@ -29,3 +29,6 @@ PURE_ONNX_OCR_FIXTURE_DIR=/path/to/fixtures cargo test -- --ignored
 The tests will automatically skip when the fixtures are not present, emitting a
 message to indicate that real assets are required.
 
+
+
+

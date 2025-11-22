@@ -14,9 +14,13 @@ pub mod ctc;
 pub mod detection;
 pub mod dictionary;
 pub mod engine;
+pub mod inference;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
+
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 /// Re-export of the CTC decoding utilities so applications can customise
 /// post-processing while keeping consistent types.
@@ -26,7 +30,7 @@ pub use detection::{DetInferenceOutput, DetInferenceSession};
 pub use dictionary::{DictionaryError, RecDictionary};
 /// High-level façade providing an ergonomic OCR API.
 pub use engine::{
-    OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
+    Backend, OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
     OcrTimings, StageTimings,
 };
 /// Geometry primitives surfaced at the crate root for convenience.

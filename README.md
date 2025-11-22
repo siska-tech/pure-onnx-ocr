@@ -137,6 +137,50 @@ cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
 
 詳細なAPI仕様については `docs/interface_design.md` および `docs/interface_design_en.md` を参照してください。
 
+## WebAssembly (WASM) サポート
+
+`pure-onnx-ocr` は WebAssembly ターゲット (`wasm32-unknown-unknown`) でのビルドをサポートしています。
+
+### WASM ビルド
+
+1. **WASM ターゲットのインストール**
+
+   ```bash
+   rustup target add wasm32-unknown-unknown
+   ```
+
+2. **WASM feature を有効にしてビルド**
+
+   ```bash
+   cargo build --target wasm32-unknown-unknown --features wasm
+   ```
+
+### WASM 環境での使用方法
+
+WASM 環境ではファイルシステムアクセスが制限されるため、モデルと辞書はメモリバッファからロードする必要があります。
+
+**モデルのロード（メモリバッファベース）:**
+
+```rust
+use pure_onnx_ocr::inference::{TractDetSession, TractRecSession};
+use pure_onnx_ocr::dictionary::RecDictionary;
+
+// バイト配列からモデルをロード
+let det_model_bytes: &[u8] = include_bytes!("path/to/det.onnx");
+let rec_model_bytes: &[u8] = include_bytes!("path/to/rec.onnx");
+let dict_bytes: &[u8] = include_bytes!("path/to/ppocrv5_dict.txt");
+
+let det_session = TractDetSession::load_from_bytes(det_model_bytes)?;
+let rec_session = TractRecSession::load_from_bytes(rec_model_bytes)?;
+let dictionary = RecDictionary::from_bytes(dict_bytes)?;
+```
+
+**注意事項:**
+
+- `tract-onnx` の WASM 互換性は限定的です。一部の ONNX オペレータが WASM 環境で動作しない可能性があります。
+- 画像デコード (`image` クレート) と後処理 (`i_overlay` クレート) の WASM 互換性も確認が必要です。
+- 完全な JavaScript バインディング（`wasm-bindgen`）は今後の実装予定です。
+
 ## Documentation
 
 - `docs/architecture.md` / `docs/architecture_en.md`

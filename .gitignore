@@ -16,7 +16,10 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-tests/fixtures/
+examples/wasm-demo/pkg
+examples/wasm-demo/ppocrv5
+
+tests/fixtures
 tests/fixtures/images
 tests/fixtures/models/ppocrv5
 

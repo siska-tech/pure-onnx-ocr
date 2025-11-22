@@ -20,5 +20,5 @@ depends_on:
 ## 作業ログ
 - `Cargo.toml` に `description`, `license`, `readme`, `repository`, `homepage`, `documentation`, `keywords`, `categories` を追加し、`Apache-2.0` ライセンスと公開先 URL を明示
 - `cargo package --no-verify --allow-dirty` を実行し、メタデータ整合性を検証
-- README の開発進捗セクションと `docs/devlog/ROADMAP.md` を更新し、タスク完了を記録
+- README の開発進捗セクションと `docs/devlog/feature/ROADMAP.md` を更新し、タスク完了を記録
 
