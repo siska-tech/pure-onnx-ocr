@@ -31,7 +31,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.1.0"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.2.0"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```

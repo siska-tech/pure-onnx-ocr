@@ -24,7 +24,7 @@ Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CT
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.1.0"
+pure_onnx_ocr = "0.2.0"
 image = "0.25"       # recommended for image I/O
 geo-types = "0.7"    # recommended for working with polygon results
 ```
