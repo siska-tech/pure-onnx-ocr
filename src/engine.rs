@@ -401,6 +401,7 @@ impl OcrEngine {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)] // private constructor fed by the builder
     fn new(
         det_model_path: Option<PathBuf>,
         rec_model_path: Option<PathBuf>,

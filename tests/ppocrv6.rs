@@ -517,9 +517,11 @@ fn engine_can_be_shared_between_threads() {
 
 #[test]
 fn thread_count_does_not_change_results() {
-    let (Some(det), Some(rec), Some(image_path)) =
-        (model_dir("tiny", "det"), model_dir("tiny", "rec"), sample_image())
-    else {
+    let (Some(det), Some(rec), Some(image_path)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        sample_image(),
+    ) else {
         return;
     };
     let read = |threads: usize| {
