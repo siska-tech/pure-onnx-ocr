@@ -164,3 +164,22 @@ cargo run --release --example ocr_bench -- --runs 5 \
 cargo run --release --example ocr_bench -- --runs 1 \
   --models v5-server,v6-medium --pipeline-models v5-server,v6-medium
 ```
+
+## 追記: マルチスレッド化後（2026-10-03）
+
+[task-perf-001](../perf/task-perf-001-multithread.md) で、推論をマルチスレッド化した（8 スレッド）。あわせて、認識のバッチサイズの既定値を 1 に変更した。同じ条件で計測し直した結果は次のとおり（パイプライン全体、ミリ秒、中央値）。
+
+| モデル | 搭乗券 | 日本語 | 変更前からの倍率 |
+| :--- | ---: | ---: | ---: |
+| v5 mobile | 1,306 | 1,209 | 3.6〜4.7 倍 |
+| v5 server | 11,744 | 11,079 | 3.4〜4.0 倍 |
+| v6 tiny | 454 | 513 | 2.9〜3.1 倍 |
+| v6 small | 1,319 | 1,236 | 3.2〜4.3 倍 |
+| v6 medium | 4,558 | 4,501 | 3.3〜3.9 倍 |
+
+世代間の比較の結論は変わらない。
+- v6 medium は v5 server より約 2.5 倍速い。
+- v6 small は v5 mobile とほぼ同じ速さ。
+- v6 tiny は v5 mobile より約 2.6 倍速い。
+
+OpenVINO の公式値との差は約 1 桁から 2〜3 倍に縮まった。v6 small は公式値 0.59 秒に対して 1.3 秒、v6 medium は 1.40 秒に対して 4.5 秒。ただし、CPU も画像も異なる点に注意。

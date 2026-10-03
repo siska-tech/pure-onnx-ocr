@@ -514,3 +514,28 @@ fn engine_can_be_shared_between_threads() {
         assert_eq!(handle.join().unwrap(), expected);
     }
 }
+
+#[test]
+fn thread_count_does_not_change_results() {
+    let (Some(det), Some(rec), Some(image_path)) =
+        (model_dir("tiny", "det"), model_dir("tiny", "rec"), sample_image())
+    else {
+        return;
+    };
+    let read = |threads: usize| {
+        OcrEngineBuilder::new()
+            .det_model_dir(&det)
+            .rec_model_dir(&rec)
+            .inference_threads(threads)
+            .build()
+            .unwrap()
+            .run_from_path(&image_path)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.text, (r.confidence * 1e4).round() as i64))
+            .collect::<Vec<_>>()
+    };
+    let single = read(1);
+    assert!(!single.is_empty());
+    assert_eq!(read(4), single);
+}

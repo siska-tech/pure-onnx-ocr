@@ -26,6 +26,7 @@ pub struct RecInferenceSession {
     base_model: InferenceModel,
     input_height: u32,
     cache: std::sync::Mutex<PlanCache<(usize, u32)>>,
+    executor: crate::threading::Executor,
 }
 
 impl RecInferenceSession {
@@ -90,6 +91,7 @@ impl RecInferenceSession {
             base_model: inference_model,
             input_height,
             cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_REC_PLAN_CACHE)),
+            executor: crate::threading::Executor::SingleThread,
         })
     }
 
@@ -99,6 +101,26 @@ impl RecInferenceSession {
     }
 
     pub fn run(&self, batch: &PreprocessedRecBatch) -> TractResult<RecInferenceOutput> {
+        self.run_on(batch, &self.executor)
+    }
+
+    /// Runs one batch single-threaded. Used when several batches already run
+    /// in parallel: nesting tract's parallel matrix multiplication inside
+    /// another rayon job lets a worker steal a second batch while the first
+    /// holds tract's thread-local scratch space, which panics with
+    /// "RefCell already borrowed".
+    pub(crate) fn run_single_threaded(
+        &self,
+        batch: &PreprocessedRecBatch,
+    ) -> TractResult<RecInferenceOutput> {
+        self.run_on(batch, &crate::threading::Executor::SingleThread)
+    }
+
+    fn run_on(
+        &self,
+        batch: &PreprocessedRecBatch,
+        executor: &crate::threading::Executor,
+    ) -> TractResult<RecInferenceOutput> {
         let tensor_shape = batch.tensor.shape();
         if tensor_shape.len() != 4 {
             return Err(anyhow!(
@@ -127,7 +149,8 @@ impl RecInferenceSession {
 
         let plan = self.runnable_for_dims(batch_size, width as u32)?;
         let run_start = crate::time::Instant::now();
-        let outputs = plan.run(tvec!(batch.tensor.clone().into()))?;
+        let outputs =
+            crate::threading::run_with(executor, || plan.run(tvec!(batch.tensor.clone().into())))?;
         log::debug!(
             "[RecInfer] Ran batch {:?} in {:?}",
             tensor_shape,
@@ -185,6 +208,17 @@ impl RecInferenceSession {
             logits,
             valid_timesteps,
         })
+    }
+
+    /// Runs inference on a pool of `threads` worker threads (`1` runs
+    /// single-threaded). Has no effect without the `multithread` feature or
+    /// on WebAssembly.
+    pub fn set_inference_threads(&mut self, threads: usize) {
+        self.executor = crate::threading::executor_for(threads);
+    }
+
+    pub(crate) fn set_executor(&mut self, executor: crate::threading::Executor) {
+        self.executor = executor;
     }
 
     /// Sets how many compiled plans (one per input shape) are kept in memory.

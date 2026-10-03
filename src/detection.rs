@@ -21,6 +21,7 @@ pub struct DetInferenceOutput {
 pub struct DetInferenceSession {
     base_model: InferenceModel,
     cache: std::sync::Mutex<PlanCache<(u32, u32)>>,
+    executor: crate::threading::Executor,
 }
 
 impl DetInferenceSession {
@@ -55,6 +56,7 @@ impl DetInferenceSession {
         Ok(Self {
             base_model: inference_model,
             cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_DET_PLAN_CACHE)),
+            executor: crate::threading::Executor::SingleThread,
         })
     }
 
@@ -67,7 +69,9 @@ impl DetInferenceSession {
         let (width, height) = input.resized_dims;
         let plan = self.runnable_for_dims(width, height)?;
 
-        let outputs = plan.run(tvec!(input.tensor.clone().into()))?;
+        let outputs = crate::threading::run_with(&self.executor, || {
+            plan.run(tvec!(input.tensor.clone().into()))
+        })?;
         let output_tensor = outputs
             .into_iter()
             .next()
@@ -86,6 +90,17 @@ impl DetInferenceSession {
         );
 
         Ok(DetInferenceOutput { probability_map })
+    }
+
+    /// Runs inference on a pool of `threads` worker threads (`1` runs
+    /// single-threaded). Has no effect without the `multithread` feature or
+    /// on WebAssembly.
+    pub fn set_inference_threads(&mut self, threads: usize) {
+        self.executor = crate::threading::executor_for(threads);
+    }
+
+    pub(crate) fn set_executor(&mut self, executor: crate::threading::Executor) {
+        self.executor = executor;
     }
 
     /// Sets how many compiled plans (one per input shape) are kept in memory.

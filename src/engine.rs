@@ -279,6 +279,8 @@ pub struct OcrEngineConfig {
     pub rec_batch_size: usize,
     /// How text regions are cut out before recognition.
     pub rec_crop_mode: RecCropMode,
+    /// Number of threads used for tract's matrix multiplications.
+    pub inference_threads: usize,
 }
 
 impl Default for OcrEngineConfig {
@@ -290,8 +292,9 @@ impl Default for OcrEngineConfig {
             det_polygon_scaler: DetPolygonScalerConfig::default(),
             rec_preprocessor: RecPreProcessorConfig::default(),
             rec_postprocessor: RecPostProcessorConfig::default(),
-            rec_batch_size: 8,
+            rec_batch_size: 1,
             rec_crop_mode: RecCropMode::default(),
+            inference_threads: 1,
         }
     }
 }
@@ -406,6 +409,7 @@ impl OcrEngine {
         rec_session: RecInferenceSession,
         dictionary: RecDictionary,
         config: OcrEngineConfig,
+        executor: crate::threading::Executor,
     ) -> Self {
         let assets = EngineAssets::new(det_model_path, rec_model_path, dictionary_path);
 
@@ -426,6 +430,7 @@ impl OcrEngine {
             Arc::clone(&dictionary),
             config.rec_preprocessor.clone(),
             config.rec_postprocessor.clone(),
+            executor,
         );
 
         Self {
@@ -704,6 +709,7 @@ pub struct OcrEngineBuilder {
     textline_orientation_dir: Option<PathBuf>,
     det_plan_cache_capacity: usize,
     rec_plan_cache_capacity: usize,
+    inference_threads: Option<usize>,
 }
 
 impl Default for OcrEngineBuilder {
@@ -736,6 +742,7 @@ impl Default for OcrEngineBuilder {
             textline_orientation_dir: None,
             det_plan_cache_capacity: crate::detection::DEFAULT_DET_PLAN_CACHE,
             rec_plan_cache_capacity: crate::recognition::DEFAULT_REC_PLAN_CACHE,
+            inference_threads: None,
         }
     }
 }
@@ -994,6 +1001,18 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Sets how many threads run the ONNX models (matrix multiplications are
+    /// split across a rayon pool owned by the engine). `1` runs
+    /// single-threaded.
+    ///
+    /// Defaults to [`default_inference_threads`](crate::default_inference_threads):
+    /// the number of logical CPUs capped at 8. Ignored (always 1) on
+    /// WebAssembly or when the `multithread` feature is disabled.
+    pub fn inference_threads(mut self, threads: usize) -> Self {
+        self.inference_threads = Some(threads.max(1));
+        self
+    }
+
     /// Consumes the builder and attempts to construct an [`OcrEngine`].
     pub fn build(self) -> Result<OcrEngine, OcrError> {
         if self.det_model_path.is_none() && self.det_model_bytes.is_none() {
@@ -1051,6 +1070,13 @@ impl OcrEngineBuilder {
         config.det_preprocessor.max_side_limit = self.det_max_side_limit;
         config.rec_batch_size = self.rec_batch_size;
         config.rec_crop_mode = self.rec_crop_mode;
+        config.inference_threads = if crate::threading::MULTITHREAD_SUPPORTED {
+            self.inference_threads
+                .unwrap_or_else(crate::threading::default_inference_threads)
+        } else {
+            1
+        };
+        let executor = crate::threading::executor_for(config.inference_threads);
 
         if let Some(det_config) = &det_model_config {
             apply_det_model_config(&mut config, det_config)?;
@@ -1071,7 +1097,7 @@ impl OcrEngineBuilder {
             apply_rec_model_config(&mut config, rec_config)?;
         }
 
-        let det_session = match (&self.det_model_bytes, &self.det_model_path) {
+        let mut det_session = match (&self.det_model_bytes, &self.det_model_path) {
             (Some(bytes), _) => DetInferenceSession::from_bytes(bytes),
             (None, Some(path)) => DetInferenceSession::load(path),
             (None, None) => unreachable!("checked above"),
@@ -1081,7 +1107,7 @@ impl OcrEngineBuilder {
             path: origin_path(self.det_model_path.as_deref()),
         })?;
         let input_height = config.rec_preprocessor.target_height;
-        let rec_session = match (&self.rec_model_bytes, &self.rec_model_path) {
+        let mut rec_session = match (&self.rec_model_bytes, &self.rec_model_path) {
             (Some(bytes), _) => {
                 RecInferenceSession::from_bytes_with_input_height(bytes, input_height)
             }
@@ -1093,6 +1119,8 @@ impl OcrEngineBuilder {
             path: origin_path(self.rec_model_path.as_deref()),
         })?;
 
+        det_session.set_executor(executor.clone());
+        rec_session.set_executor(executor.clone());
         det_session.set_plan_cache_capacity(self.det_plan_cache_capacity);
         rec_session.set_plan_cache_capacity(self.rec_plan_cache_capacity);
 
@@ -1106,14 +1134,20 @@ impl OcrEngineBuilder {
         }
         config.rec_postprocessor.blank_id = dictionary.blank_id();
 
+        let with_executor = |mut classifier: OrientationClassifier| {
+            classifier.set_executor(executor.clone());
+            classifier
+        };
         let doc_orientation = load_optional_classifier(
             self.doc_orientation_bytes.as_ref(),
             self.doc_orientation_dir.as_deref(),
-        )?;
+        )?
+        .map(with_executor);
         let textline_orientation = load_optional_classifier(
             self.textline_orientation_bytes.as_ref(),
             self.textline_orientation_dir.as_deref(),
-        )?;
+        )?
+        .map(with_executor);
 
         let dictionary_path = match dictionary_source {
             DictionarySource::Path(path) => Some(path),
@@ -1129,6 +1163,7 @@ impl OcrEngineBuilder {
             rec_session,
             dictionary,
             config,
+            executor,
         );
         engine.doc_orientation = doc_orientation;
         engine.textline_orientation = textline_orientation;
@@ -1385,6 +1420,7 @@ struct RecognitionPipeline {
     preprocessor: RecPreProcessor,
     session: Arc<RecInferenceSession>,
     postprocessor: RecPostProcessor,
+    executor: crate::threading::Executor,
 }
 
 impl RecognitionPipeline {
@@ -1393,6 +1429,7 @@ impl RecognitionPipeline {
         dictionary: Arc<RecDictionary>,
         preprocessor: RecPreProcessorConfig,
         postprocessor: RecPostProcessorConfig,
+        executor: crate::threading::Executor,
     ) -> Self {
         let postprocessor = RecPostProcessor::new(Arc::clone(&dictionary), postprocessor);
 
@@ -1400,6 +1437,7 @@ impl RecognitionPipeline {
             preprocessor: RecPreProcessor::new(preprocessor),
             session,
             postprocessor,
+            executor,
         }
     }
 
@@ -1416,33 +1454,48 @@ impl RecognitionPipeline {
         let mut timings = StageTimings::zero();
         let mut order: Vec<usize> = (0..crops.len()).collect();
         order.sort_by(|&a, &b| aspect_ratio(&crops[a]).total_cmp(&aspect_ratio(&crops[b])));
+        let chunks: Vec<&[usize]> = order.chunks(batch_size.max(1)).collect();
 
-        let mut results: Vec<Option<DecodedSequence>> = vec![None; crops.len()];
-        for chunk in order.chunks(batch_size.max(1)) {
+        // Each stage processes all batches (in parallel when the engine has a
+        // thread pool) before the next stage starts, so the stage timings
+        // stay wall-clock durations.
+        let preprocess_start = Instant::now();
+        let batches = crate::threading::parallel_map(&self.executor, &chunks, |chunk| {
             let batch_crops: Vec<RgbImage> =
                 chunk.iter().map(|&index| crops[index].clone()).collect();
+            self.preprocessor.process_images(&batch_crops)
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(OcrError::from)?;
+        timings.preprocess += preprocess_start.elapsed();
 
-            let preprocess_start = Instant::now();
-            let batch = self
-                .preprocessor
-                .process_images(&batch_crops)
-                .map_err(OcrError::from)?;
-            timings.preprocess += preprocess_start.elapsed();
+        let inference_start = Instant::now();
+        let inferences = if batches.len() > 1 {
+            crate::threading::parallel_map(&self.executor, &batches, |batch| {
+                self.session.run_single_threaded(batch)
+            })
+        } else {
+            batches
+                .iter()
+                .map(|batch| self.session.run(batch))
+                .collect()
+        }
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| OcrError::RecognitionInference { source })?;
+        timings.inference += inference_start.elapsed();
 
-            let inference_start = Instant::now();
-            let inference = self
-                .session
-                .run(&batch)
-                .map_err(|source| OcrError::RecognitionInference { source })?;
-            timings.inference += inference_start.elapsed();
+        let post_start = Instant::now();
+        let decoded = inferences
+            .iter()
+            .map(|inference| self.postprocessor.process(inference))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(OcrError::from)?;
+        timings.postprocess += post_start.elapsed();
 
-            let post_start = Instant::now();
-            let sequences = self
-                .postprocessor
-                .process(&inference)
-                .map_err(OcrError::from)?;
-            timings.postprocess += post_start.elapsed();
-
+        let mut results: Vec<Option<DecodedSequence>> = vec![None; crops.len()];
+        for (chunk, sequences) in chunks.iter().zip(decoded) {
             if sequences.len() != chunk.len() {
                 return Err(OcrError::PipelineMismatch {
                     detection_regions: chunk.len(),

@@ -43,11 +43,11 @@ for kind in det rec; do
 done
 ```
 
-| Tier | Notes | CPU time per 896x528 image |
+| Tier | Notes | CPU time per 896x528 image (Core i7-1360P, 8 threads) |
 | :--- | :--- | :--- |
-| `tiny` | Smallest. 6,904-character dictionary **without hiragana/katakana, so it cannot read Japanese** | ~2.3 s |
-| `small` | 50 languages including Japanese. Good balance | ~6.5–8 s |
-| `medium` | 50 languages. Most accurate (PaddleOCR 3.x default) | ~21–26 s |
+| `tiny` | Smallest. 6,904-character dictionary **without hiragana/katakana, so it cannot read Japanese** | ~0.5 s |
+| `small` | 50 languages including Japanese. Good balance | ~1.3 s |
+| `medium` | 50 languages. Most accurate (PaddleOCR 3.x default) | ~4.5 s |
 
 ### PP-OCRv5
 
@@ -85,7 +85,8 @@ fn main() -> Result<(), pure_onnx_ocr::OcrError> {
         .dictionary_path("models/ppocrv5/ppocrv5_dict.txt")
         .det_limit_side_len(960)
         .det_unclip_ratio(1.5)
-        .rec_batch_size(8)
+        .rec_batch_size(1)       // default; one crop per batch is fastest
+        .inference_threads(8)    // default: logical CPUs, at most 8
         .build()?;
 
     let results: Vec<OcrResult> = engine.run_from_path("examples/demo.jpg")?;
@@ -120,7 +121,8 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
   --dictionary models/ppocrv5/ppocrv5_dict.txt \
   --det-limit-side-len 960 \
   --det-unclip-ratio 1.5 \
-  --rec-batch-size 8
+  --rec-batch-size 1 \
+  --threads 8
 
 # PP-OCRv6 model directories
 cargo run --release --bin ocr_smoke -- path/to/image.jpg \
@@ -147,13 +149,15 @@ Detection resizes the long side, normalises in BGR order with ImageNet statistic
 | Detection thresholds from `inference.yml` | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | pipeline defaults (0.3 / 0.6 / 1.5) |
 | Page orientation correction (0/90/180/270) | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | off |
 | Text-line flip correction (0/180) | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | off |
+| Inference threads | `inference_threads(8)` | `--threads N` | logical CPUs, at most 8 (1 on WebAssembly) |
 | Compiled plan cache limit | `plan_cache_capacity(4, 16)` | n/a | 4 detection / 16 recognition |
 | Loading and inference logs | emitted through the `log` crate | `-v` / `--verbose` | warnings only |
 
 The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` and `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx`. An `x1_0` text-line classifier also exists, but `x0_25` is about 3x faster on tract and is recommended.
 
 > **Known limitations:**
-> - PP-OCRv6 medium takes around 20 s per image on CPU with tract. Prefer tiny or small when speed matters. Timings vary noticeably with machine load.
+> - Inference uses as many threads as logical CPUs (at most 8) by default; `inference_threads(1)` runs single-threaded. Browsers (WebAssembly) always run single-threaded.
+> - PP-OCRv6 medium takes about 4.5 s per image on CPU (tract, 8 threads). Prefer tiny or small when speed matters. See `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` for a comparison with PP-OCRv5.
 > - Text-line flip correction can miss short all-uppercase lines such as `TAIYUAN`.
 > - Document unwarping (UVDoc) and layout analysis are not supported.
 >

@@ -5,6 +5,7 @@
 //! cargo run --release --example ocr_bench -- [--fixtures DIR] [--runs N]
 //!     [--models v5-mobile,v5-server,v6-tiny,v6-small,v6-medium]
 //!     [--images general_ocr_002.jpg,ja.jpg] [--pipeline-models v5-mobile,v6-tiny,...]
+//!     [--threads N]   (default 1, i.e. single-threaded, for comparability)
 //! ```
 //!
 //! Expected layout under the fixtures directory (default `tests/fixtures`):
@@ -143,6 +144,9 @@ fn main() {
     let mut models: Vec<String> = MODELS.iter().map(|m| m.name.to_string()).collect();
     let mut images = vec!["general_ocr_002.jpg".to_string(), "ja.jpg".to_string()];
     let mut pipeline_models: Option<Vec<String>> = None;
+    let mut threads = 1usize;
+    let mut rec_batch_size = 8usize;
+    let mut panel_threshold: Option<usize> = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().expect("missing option value");
@@ -151,6 +155,9 @@ fn main() {
             "--runs" => runs = value().parse().expect("--runs expects a number"),
             "--models" => models = value().split(',').map(str::to_string).collect(),
             "--images" => images = value().split(',').map(str::to_string).collect(),
+            "--panel-threshold" => panel_threshold = Some(value().parse().expect("number")),
+            "--rec-batch-size" => rec_batch_size = value().parse().expect("number"),
+            "--threads" => threads = value().parse().expect("--threads expects a number"),
             "--pipeline-models" => {
                 pipeline_models = Some(value().split(',').map(str::to_string).collect())
             }
@@ -158,6 +165,15 @@ fn main() {
         }
     }
     let runs = runs.max(1);
+    if let Some(panels) = panel_threshold {
+        tract_onnx::tract_core::internal::multithread::set_threading_panel_threshold(panels);
+        println!("tract MMM panel threshold: {panels}");
+    }
+    println!("recognition batch size: {rec_batch_size}");
+    println!(
+        "inference threads: {threads} (multithread supported: {})",
+        pure_onnx_ocr::MULTITHREAD_SUPPORTED
+    );
 
     // Fixed recognition batch: 8 synthetic 320x48 text-like crops.
     let crops: Vec<RgbImage> = (0..8)
@@ -237,8 +253,10 @@ fn main() {
         .iter()
         .map(|spec| {
             let (det_dir, rec_dir) = dirs(spec);
-            let det = DetInferenceSession::load(det_dir.join("inference.onnx")).unwrap();
-            let rec = RecInferenceSession::load(rec_dir.join("inference.onnx")).unwrap();
+            let mut det = DetInferenceSession::load(det_dir.join("inference.onnx")).unwrap();
+            let mut rec = RecInferenceSession::load(rec_dir.join("inference.onnx")).unwrap();
+            det.set_inference_threads(threads);
+            rec.set_inference_threads(threads);
             // Warm-up: compiles the plans for these shapes.
             det.run(&det_input).unwrap();
             rec.run(&rec_batch).unwrap();
@@ -268,6 +286,8 @@ fn main() {
         let engine = OcrEngineBuilder::new()
             .det_model_dir(&det_dir)
             .rec_model_dir(&rec_dir)
+            .inference_threads(threads)
+            .rec_batch_size(rec_batch_size)
             .build()
             .unwrap();
         let load = load_start.elapsed();

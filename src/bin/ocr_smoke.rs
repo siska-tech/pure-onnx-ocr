@@ -84,6 +84,9 @@ fn run() -> Result<(), RunError> {
     if let Some(batch_size) = cli.rec_batch_size {
         builder = builder.rec_batch_size(batch_size);
     }
+    if let Some(threads) = cli.threads {
+        builder = builder.inference_threads(threads);
+    }
 
     let engine = builder.build().map_err(RunError::from)?;
 
@@ -114,6 +117,7 @@ fn run() -> Result<(), RunError> {
     );
     println!("Dictionary: {}", display_source(engine.dictionary_path()));
     println!("Recognition batch size: {}", engine.rec_batch_size());
+    println!("Inference threads: {}", engine.config().inference_threads);
     if let Some(angle) = doc_orientation_angle {
         println!(
             "Document orientation: {} degrees (rotated upright before detection)",
@@ -173,6 +177,7 @@ struct Cli {
     det_max_side_limit: Option<u32>,
     det_params_from_config: bool,
     crop_mode: Option<RecCropMode>,
+    threads: Option<usize>,
     doc_ori_model_dir: Option<PathBuf>,
     textline_ori_model_dir: Option<PathBuf>,
     det_limit_side_len: Option<u32>,
@@ -206,6 +211,7 @@ impl Cli {
             det_max_side_limit: None,
             det_params_from_config: false,
             crop_mode: None,
+            threads: None,
             doc_ori_model_dir: None,
             textline_ori_model_dir: None,
             det_limit_side_len: None,
@@ -291,6 +297,18 @@ impl Cli {
                 "--textline-ori-model-dir" => {
                     let value = next_value("--textline-ori-model-dir", &mut iter)?;
                     cli.textline_ori_model_dir = Some(PathBuf::from(value));
+                }
+                "--threads" => {
+                    let value = next_value("--threads", &mut iter)?;
+                    let parsed = value.parse::<usize>().map_err(|_| {
+                        RunError::cli(format!("invalid value for --threads: `{}`", value))
+                    })?;
+                    if parsed == 0 {
+                        return Err(RunError::cli(
+                            "--threads must be greater than zero".to_string(),
+                        ));
+                    }
+                    cli.threads = Some(parsed);
                 }
                 "--crop-mode" => {
                     let value = next_value("--crop-mode", &mut iter)?;
@@ -420,6 +438,9 @@ impl Cli {
         );
         text.push_str(
             "      --no-space-char           Do not append the space class to the dictionary\n",
+        );
+        text.push_str(
+            "      --threads N               Inference threads (default: logical CPUs, at most 8)\n",
         );
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
         text.push_str(

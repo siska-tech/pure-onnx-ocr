@@ -1237,7 +1237,9 @@ dependencies = [
  "log",
  "ndarray",
  "once_cell",
+ "rayon",
  "time",
+ "tract-linalg",
  "tract-onnx",
  "web-time",
 ]
@@ -1883,6 +1885,7 @@ dependencies = [
  "minijinja",
  "num-traits",
  "pastey",
+ "rayon",
  "tract-data",
  "walkdir",
 ]

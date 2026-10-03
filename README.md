@@ -52,11 +52,11 @@ for kind in det rec; do
 done
 ```
 
-| 階層 | 特徴 | CPU 推論時間の目安 (896x528 の画像 1 枚) |
+| 階層 | 特徴 | CPU 推論時間の目安 (896x528 の画像 1 枚、Core i7-1360P・8 スレッド) |
 | :--- | :--- | :--- |
-| `tiny` | 最軽量。辞書は 6,904 文字で、**ひらがな・カタカナを含まないため日本語には不向き** | 約 2.3 秒 |
-| `small` | 50 言語 (日本語を含む)。精度と速度のバランスが良い | 約 6.5〜8 秒 |
-| `medium` | 50 言語。最高精度 (PaddleOCR 3.x の既定) | 約 21〜26 秒 |
+| `tiny` | 最軽量。辞書は 6,904 文字で、**ひらがな・カタカナを含まないため日本語には不向き** | 約 0.5 秒 |
+| `small` | 50 言語 (日本語を含む)。精度と速度のバランスが良い | 約 1.3 秒 |
+| `medium` | 50 言語。最高精度 (PaddleOCR 3.x の既定) | 約 4.5 秒 |
 
 #### PP-OCRv5
 
@@ -95,7 +95,8 @@ fn main() -> Result<(), OcrError> {
         .dictionary_path("models/ppocrv5/ppocrv5_dict.txt")
         .det_limit_side_len(960)   // 任意調整: 入力画像の最大長辺
         .det_unclip_ratio(1.5)     // 任意調整: 検出ポリゴンのオフセット率
-        .rec_batch_size(8)         // 任意調整: 認識推論のバッチサイズ
+        .rec_batch_size(1)         // 任意調整: 認識推論のバッチサイズ（既定 1 が最速）
+        .inference_threads(8)      // 任意調整: 推論スレッド数（既定は論理 CPU 数、最大 8）
         .det_box_threshold(0.6)    // 任意調整: 検出領域の平均スコア下限 (PaddleOCR の box_thresh)
         .build()?;
 
@@ -129,7 +130,8 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
   --dictionary models/ppocrv5/ppocrv5_dict.txt \
   --det-limit-side-len 960 \
   --det-unclip-ratio 1.5 \
-  --rec-batch-size 8
+  --rec-batch-size 1 \
+  --threads 8
 ```
 
 PP-OCRv6 のモデルディレクトリを使う場合は、次のように指定します。
@@ -181,13 +183,15 @@ cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
 | 検出 YAML のしきい値を使う | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | パイプラインの既定値 (0.3 / 0.6 / 1.5) |
 | ページの向き補正（0/90/180/270） | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | 無効 |
 | 行の上下補正（0/180） | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | 無効 |
+| 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 8）。WebAssembly では 1 |
 | 推論計画のキャッシュ上限 | `plan_cache_capacity(4, 16)` | なし | 検出 4 / 認識 16 |
 | 読み込み・推論ログ | `log` クレートで出力 | `-v` / `--verbose` | Warn 以上のみ |
 
 向きの分類器は、Hugging Face の `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` と `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx` から取得します。行の向きの分類器は `x1_0` 版もありますが、tract 上では `x0_25` 版のほうが約 3 倍速いため、こちらを推奨します。
 
 > **既知の制約:**
-> - PP-OCRv6 medium は CPU (tract) 上で 1 枚あたり 20 秒前後かかります。速度を優先する場合は tiny / small を推奨します。処理時間はマシンの負荷によって大きく変動します。
+> - 推論は既定で論理 CPU 数（最大 8）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）では常にシングルスレッドです。
+> - PP-OCRv6 medium は CPU (tract・8 スレッド) で 1 枚あたり約 4.5 秒かかります。速度を優先する場合は tiny / small を推奨します。PP-OCRv5 との比較は `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` を参照してください。
 > - 行の上下補正は、短い大文字だけの行（`TAIYUAN` など）で判定を誤ることがあります。
 > - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。
 >

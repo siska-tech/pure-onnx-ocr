@@ -119,6 +119,7 @@ fn label_to_angle(label: &str) -> Result<u32, OrientationError> {
 pub struct OrientationClassifier {
     base_model: InferenceModel,
     cache: std::sync::Mutex<PlanCache<usize>>,
+    executor: crate::threading::Executor,
     resize: ClassifierResize,
     mean: [f32; 3],
     std: [f32; 3],
@@ -197,12 +198,24 @@ impl OrientationClassifier {
         Ok(Self {
             base_model: model,
             cache: std::sync::Mutex::new(PlanCache::new(2)),
+            executor: crate::threading::Executor::SingleThread,
             resize,
             mean: config.normalize_mean.unwrap_or(IMAGENET_MEAN),
             std: config.normalize_std.unwrap_or(IMAGENET_STD),
             labels,
             angles,
         })
+    }
+
+    /// Runs inference on a pool of `threads` worker threads (`1` runs
+    /// single-threaded). Has no effect without the `multithread` feature or
+    /// on WebAssembly.
+    pub fn set_inference_threads(&mut self, threads: usize) {
+        self.executor = crate::threading::executor_for(threads);
+    }
+
+    pub(crate) fn set_executor(&mut self, executor: crate::threading::Executor) {
+        self.executor = executor;
     }
 
     /// Returns the class labels in model output order.
@@ -232,7 +245,8 @@ impl OrientationClassifier {
         let plan = self.plan_for_batch(images.len())?;
         let tensor: Tensor = batch.into_dyn().into();
         let run_start = crate::time::Instant::now();
-        let outputs = plan.run(tvec!(tensor.into()))?;
+        let outputs =
+            crate::threading::run_with(&self.executor, || plan.run(tvec!(tensor.into())))?;
         log::debug!(
             "[Orientation] classified {} image(s) in {:?}",
             images.len(),

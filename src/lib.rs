@@ -22,6 +22,7 @@ pub mod paddle_config;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
+mod threading;
 mod time;
 
 /// Re-export of the CTC decoding utilities so applications can customise
@@ -55,6 +56,8 @@ pub use recognition::{
     RecInferenceOutput, RecInferenceSession, RecPostProcessor, RecPostProcessorConfig,
     RecPostProcessorError,
 };
+/// Inference thread settings (see [`OcrEngineBuilder::inference_threads`]).
+pub use threading::{default_inference_threads, MULTITHREAD_SUPPORTED};
 
 use std::path::Path;
 use tract_onnx::prelude::*;

@@ -123,7 +123,8 @@ impl OcrEngineBuilder {
         Ok(self.map(|b| b.rec_crop_mode(mode)))
     }
 
-    /// Recognition batch size (default 8).
+    /// Recognition batch size (default 1; with tract, one crop per batch is
+    /// fastest because it avoids padding crops to a common width).
     #[wasm_bindgen(js_name = recBatchSize)]
     pub fn rec_batch_size(self, size: usize) -> Self {
         self.map(|b| b.rec_batch_size(size))

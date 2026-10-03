@@ -13,8 +13,18 @@ keywords = ["ocr", "onnx", "paddleocr", "text-detection", "text-recognition"]
 categories = ["science::ai-and-machine-learning", "science::computer-vision"]
 exclude = ["bindings/"]
 
+[features]
+default = ["multithread"]
+# Run tract's matrix multiplications on a rayon thread pool (native targets).
+# WebAssembly builds always run single-threaded.
+multithread = ["tract-linalg/multithread-mm", "dep:rayon"]
+
 [dependencies]
 tract-onnx = "0.23"
+# Same version as tract-onnx (Cargo unifies them); only used to turn on the
+# rayon-based parallel matrix multiplication through the `multithread` feature.
+tract-linalg = "0.23"
+rayon = { version = "1", optional = true }
 log = "0.4"
 ndarray = "0.17"
 time = "0.3.44"
