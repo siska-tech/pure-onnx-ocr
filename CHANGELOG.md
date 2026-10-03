@@ -108,5 +108,5 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/95bcbe1...release/0.2.0
-[0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/commit/95bcbe1
+[0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/releases/tag/v0.1.0
