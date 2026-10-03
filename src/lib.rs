@@ -42,9 +42,9 @@ pub use postprocessing::{
     DetUnclipLineJoin,
 };
 pub use preprocessing::{
-    DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
-    PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig, RecPreProcessorError,
-    RecTextRegion, IMAGENET_MEAN, IMAGENET_STD,
+    DetLimitType, DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError,
+    PreprocessedDetInput, PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig,
+    RecPreProcessorError, RecTextRegion, IMAGENET_MEAN, IMAGENET_STD,
 };
 pub use recognition::{
     RecInferenceOutput, RecInferenceSession, RecPostProcessor, RecPostProcessorConfig,

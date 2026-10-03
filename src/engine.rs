@@ -7,7 +7,7 @@ use crate::postprocessing::{
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
 };
 use crate::preprocessing::{
-    DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
+    DetLimitType, DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
     RecPreProcessorConfig, RecPreProcessorError, RecTextRegion,
 };
 use crate::recognition::{
@@ -527,9 +527,12 @@ pub struct OcrEngineBuilder {
     det_config_path: Option<PathBuf>,
     rec_config_path: Option<PathBuf>,
     det_limit_side_len: u32,
-    det_unclip_ratio: f32,
-    det_threshold: f32,
-    det_box_threshold: f32,
+    det_limit_type: DetLimitType,
+    det_max_side_limit: u32,
+    det_unclip_ratio: Option<f32>,
+    det_threshold: Option<f32>,
+    det_box_threshold: Option<f32>,
+    det_postprocess_from_model_config: bool,
     rec_batch_size: usize,
     rec_use_space_char: bool,
     det_plan_cache_capacity: usize,
@@ -538,17 +541,20 @@ pub struct OcrEngineBuilder {
 
 impl Default for OcrEngineBuilder {
     fn default() -> Self {
-        let post = DetPostProcessorConfig::default();
+        let pre = DetPreProcessorConfig::default();
         Self {
             det_model_path: None,
             rec_model_path: None,
             dictionary_path: None,
             det_config_path: None,
             rec_config_path: None,
-            det_limit_side_len: DetPreProcessorConfig::default().limit_side_len,
-            det_unclip_ratio: DetPolygonUnclipperConfig::default().unclip_ratio,
-            det_threshold: post.threshold,
-            det_box_threshold: post.box_threshold,
+            det_limit_side_len: pre.limit_side_len,
+            det_limit_type: pre.limit_type,
+            det_max_side_limit: pre.max_side_limit,
+            det_unclip_ratio: None,
+            det_threshold: None,
+            det_box_threshold: None,
+            det_postprocess_from_model_config: false,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
             rec_use_space_char: true,
             det_plan_cache_capacity: crate::detection::DEFAULT_DET_PLAN_CACHE,
@@ -628,23 +634,58 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Selects how `det_limit_side_len` is applied (PaddleOCR `limit_type`).
+    ///
+    /// The default [`DetLimitType::Max`] with 960 downscales large images,
+    /// which is fast on CPU. PaddleOCR 3.x runs detection with
+    /// `DetLimitType::Min` and a limit of 64, i.e. at native resolution:
+    ///
+    /// ```no_run
+    /// # use pure_onnx_ocr::{DetLimitType, OcrEngineBuilder};
+    /// let builder = OcrEngineBuilder::new()
+    ///     .det_limit_side_len(64)
+    ///     .det_limit_type(DetLimitType::Min);
+    /// ```
+    pub fn det_limit_type(mut self, limit_type: DetLimitType) -> Self {
+        self.det_limit_type = limit_type;
+        self
+    }
+
+    /// Sets the hard upper bound for the longest detection input side
+    /// (PaddleOCR `max_side_limit`, default 4000). `0` disables it.
+    pub fn det_max_side_limit(mut self, limit: u32) -> Self {
+        self.det_max_side_limit = limit;
+        self
+    }
+
+    /// When enabled, the detection `inference.yml` `PostProcess` values
+    /// (`thresh`, `box_thresh`, `unclip_ratio`, `max_candidates`) are used
+    /// instead of the PaddleOCR pipeline defaults (0.3 / 0.6 / 1.5 / 1000).
+    /// Values set explicitly through [`det_threshold`](Self::det_threshold),
+    /// [`det_box_threshold`](Self::det_box_threshold) or
+    /// [`det_unclip_ratio`](Self::det_unclip_ratio) still take precedence.
+    pub fn det_postprocess_from_model_config(mut self, enabled: bool) -> Self {
+        self.det_postprocess_from_model_config = enabled;
+        self
+    }
+
     /// Sets the unclip ratio used during polygon offsetting.
     pub fn det_unclip_ratio(mut self, ratio: f64) -> Self {
-        self.det_unclip_ratio = ratio as f32;
+        self.det_unclip_ratio = Some(ratio as f32);
         self
     }
 
     /// Sets the probability threshold used to binarise the DBNet output
     /// (PaddleOCR `thresh`, default `0.3`).
     pub fn det_threshold(mut self, threshold: f32) -> Self {
-        self.det_threshold = threshold;
+        self.det_threshold = Some(threshold);
         self
     }
 
     /// Sets the minimum mean probability for a detected region
     /// (PaddleOCR `box_thresh`, default `0.6`).
     pub fn det_box_threshold(mut self, threshold: f32) -> Self {
-        self.det_box_threshold = threshold;
+        self.det_box_threshold = Some(threshold);
         self
     }
 
@@ -712,13 +753,24 @@ impl OcrEngineBuilder {
 
         let mut config = OcrEngineConfig::default();
         config.det_preprocessor.limit_side_len = self.det_limit_side_len;
-        config.det_unclipper.unclip_ratio = self.det_unclip_ratio;
-        config.det_postprocessor.threshold = self.det_threshold;
-        config.det_postprocessor.box_threshold = self.det_box_threshold;
+        config.det_preprocessor.limit_type = self.det_limit_type;
+        config.det_preprocessor.max_side_limit = self.det_max_side_limit;
         config.rec_batch_size = self.rec_batch_size;
 
         if let Some(det_config) = &det_model_config {
             apply_det_model_config(&mut config, det_config)?;
+            if self.det_postprocess_from_model_config {
+                apply_det_postprocess_config(&mut config, det_config);
+            }
+        }
+        if let Some(ratio) = self.det_unclip_ratio {
+            config.det_unclipper.unclip_ratio = ratio;
+        }
+        if let Some(threshold) = self.det_threshold {
+            config.det_postprocessor.threshold = threshold;
+        }
+        if let Some(threshold) = self.det_box_threshold {
+            config.det_postprocessor.box_threshold = threshold;
         }
         if let Some(rec_config) = &rec_model_config {
             apply_rec_model_config(&mut config, rec_config)?;
@@ -790,6 +842,24 @@ fn apply_det_model_config(
         config.det_preprocessor.std = std;
     }
     Ok(())
+}
+
+fn apply_det_postprocess_config(
+    config: &mut OcrEngineConfig,
+    model_config: &PaddleInferenceConfig,
+) {
+    if let Some(threshold) = model_config.det_thresh {
+        config.det_postprocessor.threshold = threshold;
+    }
+    if let Some(threshold) = model_config.det_box_thresh {
+        config.det_postprocessor.box_threshold = threshold;
+    }
+    if let Some(ratio) = model_config.det_unclip_ratio {
+        config.det_unclipper.unclip_ratio = ratio;
+    }
+    if let Some(max) = model_config.det_max_candidates {
+        config.det_postprocessor.max_candidates = max;
+    }
 }
 
 fn apply_rec_model_config(

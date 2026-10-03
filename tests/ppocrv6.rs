@@ -218,3 +218,35 @@ fn ppocrv5_yaml_dictionary_matches_text_dictionary() {
         );
     }
 }
+
+#[test]
+fn model_config_postprocess_values_respect_explicit_overrides() {
+    let (Some(det), Some(rec)) = (model_dir("tiny", "det"), model_dir("tiny", "rec")) else {
+        return;
+    };
+
+    // Default: PaddleOCR pipeline values, YAML PostProcess ignored.
+    let engine = OcrEngineBuilder::new()
+        .det_model_dir(&det)
+        .rec_model_dir(&rec)
+        .build()
+        .unwrap();
+    assert_eq!(engine.config().det_postprocessor.threshold, 0.3);
+    assert_eq!(engine.config().det_postprocessor.box_threshold, 0.6);
+    assert_eq!(engine.config().det_unclipper.unclip_ratio, 1.5);
+
+    // Opt-in: tiny_det inference.yml uses 0.2 / 0.4 / 1.4 / 3000, while an
+    // explicit setter still wins.
+    let engine = OcrEngineBuilder::new()
+        .det_model_dir(&det)
+        .rec_model_dir(&rec)
+        .det_postprocess_from_model_config(true)
+        .det_box_threshold(0.5)
+        .build()
+        .unwrap();
+    let config = engine.config();
+    assert_eq!(config.det_postprocessor.threshold, 0.2);
+    assert_eq!(config.det_postprocessor.box_threshold, 0.5);
+    assert!((config.det_unclipper.unclip_ratio - 1.4).abs() < 1e-6);
+    assert_eq!(config.det_postprocessor.max_candidates, 3000);
+}

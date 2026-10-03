@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings};
+use pure_onnx_ocr::{
+    DetLimitType, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings,
+};
 
 const DEFAULT_DET_MODEL: &str = "models/ppocrv5/det.onnx";
 const DEFAULT_REC_MODEL: &str = "models/ppocrv5/rec.onnx";
@@ -52,6 +54,15 @@ fn run() -> Result<(), RunError> {
     }
     if cli.no_space_char {
         builder = builder.rec_use_space_char(false);
+    }
+    if let Some(limit_type) = cli.det_limit_type {
+        builder = builder.det_limit_type(limit_type);
+    }
+    if let Some(limit) = cli.det_max_side_limit {
+        builder = builder.det_max_side_limit(limit);
+    }
+    if cli.det_params_from_config {
+        builder = builder.det_postprocess_from_model_config(true);
     }
 
     if let Some(limit) = cli.det_limit_side_len {
@@ -137,6 +148,9 @@ struct Cli {
     det_thresh: Option<f32>,
     det_box_thresh: Option<f32>,
     no_space_char: bool,
+    det_limit_type: Option<DetLimitType>,
+    det_max_side_limit: Option<u32>,
+    det_params_from_config: bool,
     det_limit_side_len: Option<u32>,
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
@@ -164,6 +178,9 @@ impl Cli {
             det_thresh: None,
             det_box_thresh: None,
             no_space_char: false,
+            det_limit_type: None,
+            det_max_side_limit: None,
+            det_params_from_config: false,
             det_limit_side_len: None,
             det_unclip_ratio: None,
             rec_batch_size: None,
@@ -213,6 +230,32 @@ impl Cli {
                 }
                 "--no-space-char" => {
                     cli.no_space_char = true;
+                }
+                "--det-limit-type" => {
+                    let value = next_value("--det-limit-type", &mut iter)?;
+                    cli.det_limit_type = Some(match value.as_str() {
+                        "max" => DetLimitType::Max,
+                        "min" => DetLimitType::Min,
+                        other => {
+                            return Err(RunError::cli(format!(
+                            "invalid value for --det-limit-type: `{}` (expected `max` or `min`)",
+                            other
+                        )))
+                        }
+                    });
+                }
+                "--det-max-side-limit" => {
+                    let value = next_value("--det-max-side-limit", &mut iter)?;
+                    let parsed = value.parse::<u32>().map_err(|_| {
+                        RunError::cli(format!(
+                            "invalid value for --det-max-side-limit: `{}`",
+                            value
+                        ))
+                    })?;
+                    cli.det_max_side_limit = Some(parsed);
+                }
+                "--det-params-from-config" => {
+                    cli.det_params_from_config = true;
                 }
                 "--det-limit-side-len" => {
                     let value = next_value("--det-limit-side-len", &mut iter)?;
@@ -298,7 +341,34 @@ impl Cli {
         );
         text.push_str("      --det-unclip-ratio R      Override detection polygon unclip ratio\n");
         text.push_str("      --rec-batch-size N        Override recognition batch size (> 0)\n");
+        text.push_str(
+            "      --det-model-dir DIR       PaddleOCR detection model directory (inference.onnx + inference.yml)\n",
+        );
+        text.push_str(
+            "      --rec-model-dir DIR       PaddleOCR recognition model directory; its inference.yml supplies the dictionary\n",
+        );
+        text.push_str(
+            "      --det-thresh T            DBNet binarisation threshold (default: 0.3)\n",
+        );
+        text.push_str(
+            "      --det-box-thresh T        Minimum mean score per detected box (default: 0.6)\n",
+        );
+        text.push_str(
+            "      --det-limit-type max|min  Bound the longest (max, default) or shortest (min) side by --det-limit-side-len\n",
+        );
+        text.push_str(
+            "      --det-max-side-limit N    Upper bound for the longest detection side (default: 4000)\n",
+        );
+        text.push_str(
+            "      --det-params-from-config  Use thresh/box_thresh/unclip_ratio from the detection inference.yml\n",
+        );
+        text.push_str(
+            "      --no-space-char           Do not append the space class to the dictionary\n",
+        );
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
+        text.push_str(
+            "  -v, --verbose                 Print model loading and inference logs to stderr\n",
+        );
         text
     }
 }

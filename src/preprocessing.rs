@@ -8,11 +8,29 @@ pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 /// ImageNet std used by PaddleOCR detection models (`NormalizeImage.std`).
 pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
+/// How `limit_side_len` constrains the detection input size
+/// (PaddleOCR `DetResizeForTest.limit_type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetLimitType {
+    /// Downscale so the longest side is at most `limit_side_len`.
+    /// Never upscales. This crate's historical default (960).
+    Max,
+    /// Upscale so the shortest side is at least `limit_side_len`; larger
+    /// images keep their native resolution. PaddleOCR 3.x uses this with
+    /// `limit_side_len = 64`, so detection effectively runs at full size.
+    Min,
+}
+
 /// Configuration parameters for `DetPreProcessor`.
 #[derive(Debug, Clone, Copy)]
 pub struct DetPreProcessorConfig {
-    /// Longest side (in pixels) the image is downscaled to before inference.
+    /// Side length limit, interpreted according to `limit_type`.
     pub limit_side_len: u32,
+    /// Whether `limit_side_len` bounds the longest or the shortest side.
+    pub limit_type: DetLimitType,
+    /// Hard upper bound for the longest side after the `limit_type` rule
+    /// (PaddleOCR `max_side_limit`, 4000). `0` disables the bound.
+    pub max_side_limit: u32,
     /// Per-channel mean subtracted after scaling pixels to `[0, 1]`.
     /// Indexed in model channel order (see `color_order`).
     pub mean: [f32; 3],
@@ -26,6 +44,8 @@ impl Default for DetPreProcessorConfig {
     fn default() -> Self {
         Self {
             limit_side_len: 960,
+            limit_type: DetLimitType::Max,
+            max_side_limit: 4000,
             mean: IMAGENET_MEAN,
             std: IMAGENET_STD,
             color_order: ColorOrder::Bgr,
@@ -80,8 +100,13 @@ impl DetPreProcessor {
             return Err(DetPreProcessorError::EmptyImage);
         }
 
-        let (resized_w, resized_h, scale_ratio) =
-            compute_resized_dims(orig_w, orig_h, self.config.limit_side_len);
+        let (resized_w, resized_h, scale_ratio) = compute_resized_dims(
+            orig_w,
+            orig_h,
+            self.config.limit_side_len,
+            self.config.limit_type,
+            self.config.max_side_limit,
+        );
 
         let resized = if resized_w == orig_w && resized_h == orig_h {
             image.clone()
@@ -127,18 +152,35 @@ impl DetPreProcessor {
     }
 }
 
-fn compute_resized_dims(orig_w: u32, orig_h: u32, limit_side_len: u32) -> (u32, u32, f64) {
-    if limit_side_len == 0 {
-        return (orig_w, orig_h, 1.0);
-    }
-
+fn compute_resized_dims(
+    orig_w: u32,
+    orig_h: u32,
+    limit_side_len: u32,
+    limit_type: DetLimitType,
+    max_side_limit: u32,
+) -> (u32, u32, f64) {
+    let max_side = orig_w.max(orig_h) as f64;
+    let min_side = orig_w.min(orig_h) as f64;
     let limit = limit_side_len as f64;
-    let max_side = (orig_w.max(orig_h)) as f64;
-    if max_side <= limit {
+
+    let mut scale_ratio = if limit_side_len == 0 {
+        1.0
+    } else {
+        match limit_type {
+            DetLimitType::Max if max_side > limit => limit / max_side,
+            DetLimitType::Min if min_side < limit => limit / min_side,
+            _ => 1.0,
+        }
+    };
+
+    if max_side_limit > 0 && max_side * scale_ratio > max_side_limit as f64 {
+        scale_ratio = max_side_limit as f64 / max_side;
+    }
+
+    if (scale_ratio - 1.0).abs() < f64::EPSILON {
         return (orig_w, orig_h, 1.0);
     }
 
-    let scale_ratio = limit / max_side;
     let resized_w = ((orig_w as f64 * scale_ratio).round().max(1.0)) as u32;
     let resized_h = ((orig_h as f64 * scale_ratio).round().max(1.0)) as u32;
 
@@ -436,6 +478,46 @@ mod tests {
 
         assert_eq!(result.resized_dims, (960, 544));
         assert!((result.scale_ratio - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn min_limit_keeps_native_resolution_for_large_images() {
+        let image = solid_image(1920, 1080, 128);
+        let preprocessor = DetPreProcessor::new(DetPreProcessorConfig {
+            limit_side_len: 64,
+            limit_type: DetLimitType::Min,
+            ..DetPreProcessorConfig::default()
+        });
+        let result = preprocessor.process(&image).unwrap();
+        assert_eq!(result.resized_dims, (1920, 1088));
+        assert!((result.scale_ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn min_limit_upscales_small_images() {
+        let image = solid_image(200, 32, 128);
+        let preprocessor = DetPreProcessor::new(DetPreProcessorConfig {
+            limit_side_len: 64,
+            limit_type: DetLimitType::Min,
+            ..DetPreProcessorConfig::default()
+        });
+        let result = preprocessor.process(&image).unwrap();
+        assert!((result.scale_ratio - 2.0).abs() < 1e-9);
+        assert_eq!(result.resized_dims, (416, 64));
+    }
+
+    #[test]
+    fn max_side_limit_caps_native_resolution() {
+        let image = solid_image(8000, 1000, 128);
+        let preprocessor = DetPreProcessor::new(DetPreProcessorConfig {
+            limit_side_len: 64,
+            limit_type: DetLimitType::Min,
+            max_side_limit: 4000,
+            ..DetPreProcessorConfig::default()
+        });
+        let result = preprocessor.process(&image).unwrap();
+        assert!((result.scale_ratio - 0.5).abs() < 1e-9);
+        assert_eq!(result.resized_dims, (4000, 512));
     }
 
     #[test]
