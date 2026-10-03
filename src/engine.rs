@@ -629,7 +629,7 @@ impl OcrEngine {
 
         let results: Vec<OcrResult> = polygons
             .into_iter()
-            .zip(sequences.into_iter())
+            .zip(sequences)
             .map(|(polygon, sequence)| OcrResult {
                 text: sequence.text,
                 confidence: sequence.confidence,

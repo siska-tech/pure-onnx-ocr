@@ -506,7 +506,7 @@ impl std::error::Error for RunError {
     }
 }
 
-fn print_benchmark_report(image_path: &PathBuf, run: &OcrRunWithMetrics) {
+fn print_benchmark_report(image_path: &std::path::Path, run: &OcrRunWithMetrics) {
     println!("[INFO] benchmark.image={}", image_path.display());
     print_timing_line("benchmark.total_seconds", run.timings.total);
     print_timing_line("benchmark.image_decode_seconds", run.timings.image_decode);

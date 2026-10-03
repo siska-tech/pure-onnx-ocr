@@ -277,7 +277,7 @@ impl DetPolygonUnclipper {
     pub fn unclip_contours(&self, contours: &[Contour<i32>]) -> Vec<Polygon<f64>> {
         contours
             .iter()
-            .filter_map(|contour| contour_to_polygon(contour))
+            .filter_map(contour_to_polygon)
             .flat_map(|polygon| self.unclip_polygon(&polygon))
             .filter(|polygon| polygon_area(polygon) >= self.config.min_result_area)
             .collect()
@@ -745,7 +745,7 @@ mod tests {
 
         assert_eq!(scaled.len(), 1);
         let exterior = scaled[0].exterior();
-        let expected = vec![
+        let expected = [
             Coord { x: 100.0, y: 40.0 },
             Coord { x: 300.0, y: 40.0 },
             Coord { x: 300.0, y: 240.0 },
