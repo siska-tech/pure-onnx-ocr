@@ -12,7 +12,7 @@ Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CT
 - **DBNet + CTC pipeline** – mirrors PaddleOCR 3.x pre- and post-processing: BGR input, ImageNet normalisation, variable-width recognition, `box_thresh` filtering, and the space class.
 - **PaddleOCR 3.x model directories** – point the builder at a directory with `inference.onnx` + `inference.yml` and the preprocessing settings and dictionary are read from `inference.yml`.
 - **Extensible architecture** – detection, recognition, and geometry utilities are separated so you can swap or extend individual stages.
-- **Portable** – designed to run in environments where shipping C++ runtimes is difficult (embedded, serverless, WASM).
+- **Portable** – runs where shipping C++ runtimes is difficult (embedded, serverless). **Verified in browsers (`wasm32-unknown-unknown`) and on WASI**; see [WebAssembly](#webassembly).
 
 ## Prerequisites
 
@@ -158,6 +158,40 @@ The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LC
 > - Document unwarping (UVDoc) and layout analysis are not supported.
 >
 > Research notes and design decisions are in `docs/devlog/ppocrv6/`.
+
+## WebAssembly
+
+The crate runs in browsers (`wasm32-unknown-unknown`) and on WASI (`wasm32-wasip1`). Browsers have no file system, so models, `inference.yml` files and images are passed as bytes or text:
+
+```rust
+let engine = OcrEngineBuilder::new()
+    .det_model_bytes(det_onnx)       // Vec<u8>
+    .det_config_yaml(det_yaml)       // String
+    .rec_model_bytes(rec_onnx)
+    .rec_config_yaml(rec_yaml)       // also provides the dictionary
+    .build()?;
+let results = engine.run_from_bytes(&jpeg_bytes)?;
+```
+
+From JavaScript, use the wasm-bindgen bindings in `bindings/wasm`. Build steps and a demo running OCR in a Web Worker are in [examples/web/README.md](examples/web/README.md).
+
+```js
+const engine = new OcrEngineBuilder()
+  .detModel(detOnnxBytes, detYamlText)
+  .recModel(recOnnxBytes, recYamlText)
+  .build();
+const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, ...]
+```
+
+`.cargo/config.toml` enables WebAssembly SIMD (`simd128`), which is about 2x faster than without it. Measured in headless Chrome 153 on an 896x528 image:
+
+| Model | Time |
+| :--- | ---: |
+| PP-OCRv6 tiny | 2.1 s |
+| PP-OCRv6 small with page and text-line orientation | 7.7 s |
+| PP-OCRv6 medium | 30.4 s |
+
+`OcrEngine` is `Send + Sync`, so one engine wrapped in an `Arc` can serve several threads at once.
 
 ### Troubleshooting
 

@@ -15,7 +15,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 - **DBNet + CTC 認識パイプライン**: PaddleOCR が採用する検出・認識モデルを Rust 上で再現します。前処理 (BGR・ImageNet 正規化・可変幅認識) と後処理 (`box_thresh`・空白クラス) は PaddleOCR 3.x に合わせています。
 - **PaddleOCR 3.x のモデルディレクトリをそのまま利用可能**: `inference.onnx` と `inference.yml` が入ったディレクトリを指定すると、前処理の設定と辞書を `inference.yml` から読み込みます。
 - **モジュール構成が明確**: `OcrEngineBuilder` と `OcrEngine` を中心に、前処理・推論・後処理を分離しています。
-- **移植性**: 組み込み環境、サーバーレス、WASMなど、C++依存が課題となる環境でも動作を想定しています。
+- **移植性**: 組み込み環境やサーバーレスなど、C++ への依存が問題になる環境でも動きます。**ブラウザ（`wasm32-unknown-unknown`）と WASI で動作を確認済みです**（[WebAssembly](#webassembly) を参照）。
 
 ## 導入手順
 
@@ -192,6 +192,40 @@ cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
 > - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。
 >
 > 調査の経緯と検討内容は `docs/devlog/ppocrv6/` を参照してください。
+
+## WebAssembly
+
+ブラウザ（`wasm32-unknown-unknown`）と WASI（`wasm32-wasip1`）で動作します。ブラウザにはファイルシステムがないので、モデル・`inference.yml`・画像はバイト列やテキストとして渡します。
+
+```rust
+let engine = OcrEngineBuilder::new()
+    .det_model_bytes(det_onnx)       // Vec<u8>
+    .det_config_yaml(det_yaml)       // String
+    .rec_model_bytes(rec_onnx)
+    .rec_config_yaml(rec_yaml)       // 辞書もここから読み込む
+    .build()?;
+let results = engine.run_from_bytes(&jpeg_bytes)?;
+```
+
+JavaScript から使う場合は、wasm-bindgen のバインディング `bindings/wasm` を使います。ビルド手順と、Web Worker で動かすデモは [examples/web/README.md](examples/web/README.md) にあります。
+
+```js
+const engine = new OcrEngineBuilder()
+  .detModel(detOnnxBytes, detYamlText)
+  .recModel(recOnnxBytes, recYamlText)
+  .build();
+const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, ...]
+```
+
+`.cargo/config.toml` で WebAssembly SIMD（`simd128`）を有効にしており、無効の場合より約 2 倍速くなります。ヘッドレス Chrome 153 での実測値（896x528 の画像）は次のとおりです。
+
+| モデル | 処理時間 |
+| :--- | ---: |
+| PP-OCRv6 tiny | 2.1 秒 |
+| PP-OCRv6 small（ページと行の向き補正あり） | 7.7 秒 |
+| PP-OCRv6 medium | 30.4 秒 |
+
+`OcrEngine` は `Send + Sync` なので、`Arc` で包めば複数スレッドから同時に使えます。
 
 ### よくあるエラー
 
