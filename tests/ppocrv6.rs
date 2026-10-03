@@ -428,3 +428,46 @@ fn textline_orientation_fixes_upside_down_lines() {
         assert!(!without.contains(expected));
     }
 }
+
+#[test]
+fn in_memory_models_match_file_based_engine() {
+    let (Some(det), Some(rec), Some(image_path)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        sample_image(),
+    ) else {
+        return;
+    };
+    let read = |p: PathBuf| std::fs::read(p).unwrap();
+    let read_text = |p: PathBuf| std::fs::read_to_string(p).unwrap();
+
+    let from_files = OcrEngineBuilder::new()
+        .det_model_dir(&det)
+        .rec_model_dir(&rec)
+        .build()
+        .unwrap();
+    let from_memory = OcrEngineBuilder::new()
+        .det_model_bytes(read(det.join("inference.onnx")))
+        .det_config_yaml(read_text(det.join("inference.yml")))
+        .rec_model_bytes(read(rec.join("inference.onnx")))
+        .rec_config_yaml(read_text(rec.join("inference.yml")))
+        .build()
+        .unwrap();
+    assert!(from_memory.det_model_path().is_none());
+    assert!(from_memory.rec_model_path().is_none());
+    assert!(from_memory.dictionary_path().is_none());
+
+    let expected: Vec<String> = from_files
+        .run_from_path(&image_path)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+    let actual: Vec<String> = from_memory
+        .run_from_bytes(&read(image_path))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+    assert_eq!(actual, expected);
+}

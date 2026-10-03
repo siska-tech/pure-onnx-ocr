@@ -29,8 +29,19 @@ impl DetInferenceSession {
         let model_path = model_path.as_ref();
         log::info!("[DetInfer] Loading detection model from {:?}", model_path);
 
-        let mut inference_model = crate::onnx_model::load_paddle_onnx(model_path)?;
+        Self::from_model(crate::onnx_model::load_paddle_onnx(model_path)?)
+    }
 
+    /// Loads a DBNet detection model from ONNX bytes held in memory.
+    pub fn from_bytes(model_bytes: &[u8]) -> TractResult<Self> {
+        log::info!(
+            "[DetInfer] Loading detection model from memory ({} bytes)",
+            model_bytes.len()
+        );
+        Self::from_model(crate::onnx_model::load_paddle_onnx_from_bytes(model_bytes)?)
+    }
+
+    fn from_model(mut inference_model: InferenceModel) -> TractResult<Self> {
         let height = inference_model.symbols.sym("height");
         let width = inference_model.symbols.sym("width");
         inference_model.set_input_fact(

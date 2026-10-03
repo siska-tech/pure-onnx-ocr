@@ -399,9 +399,9 @@ impl OcrEngine {
     }
 
     fn new(
-        det_model_path: PathBuf,
-        rec_model_path: PathBuf,
-        dictionary_path: PathBuf,
+        det_model_path: Option<PathBuf>,
+        rec_model_path: Option<PathBuf>,
+        dictionary_path: Option<PathBuf>,
         det_session: DetInferenceSession,
         rec_session: RecInferenceSession,
         dictionary: RecDictionary,
@@ -463,6 +463,33 @@ impl OcrEngine {
         Ok(run)
     }
 
+    /// Decodes an encoded image (PNG, JPEG, ...) held in memory and runs the
+    /// full OCR pipeline on it. Useful where no file system is available,
+    /// such as in browsers.
+    pub fn run_from_bytes(&self, image_bytes: &[u8]) -> Result<Vec<OcrResult>, OcrError> {
+        Ok(self.run_with_metrics_from_bytes(image_bytes)?.results)
+    }
+
+    /// Same as [`run_from_bytes`](Self::run_from_bytes) and also returns
+    /// benchmarking data.
+    pub fn run_with_metrics_from_bytes(
+        &self,
+        image_bytes: &[u8],
+    ) -> Result<OcrRunWithMetrics, OcrError> {
+        let overall_start = Instant::now();
+        let decode_start = Instant::now();
+        let image =
+            image::load_from_memory(image_bytes).map_err(|source| OcrError::ImageDecode {
+                source,
+                path: PathBuf::from(crate::dictionary::IN_MEMORY),
+            })?;
+        let image_decode = decode_start.elapsed();
+        let mut run = self.run_with_metrics_from_image_impl(&image)?;
+        run.timings.image_decode = image_decode;
+        run.timings.total = overall_start.elapsed();
+        Ok(run)
+    }
+
     /// Executes the full OCR pipeline on an image already loaded in memory.
     /// Returns the effective configuration for this engine.
     pub fn config(&self) -> &OcrEngineConfig {
@@ -470,17 +497,24 @@ impl OcrEngine {
     }
 
     /// Returns the path used for the detection model.
-    pub fn det_model_path(&self) -> &Path {
+    ///
+    /// `None` when the model was supplied as bytes.
+    pub fn det_model_path(&self) -> Option<&Path> {
         self.assets.det_model_path()
     }
 
     /// Returns the path used for the recognition model.
-    pub fn rec_model_path(&self) -> &Path {
+    ///
+    /// `None` when the model was supplied as bytes.
+    pub fn rec_model_path(&self) -> Option<&Path> {
         self.assets.rec_model_path()
     }
 
     /// Returns the path used for the recognition dictionary.
-    pub fn dictionary_path(&self) -> &Path {
+    ///
+    /// `None` when the dictionary was supplied as text (or as in-memory
+    /// `inference.yml`).
+    pub fn dictionary_path(&self) -> Option<&Path> {
         self.assets.dictionary_path()
     }
 
@@ -649,6 +683,13 @@ pub struct OcrEngineBuilder {
     dictionary_path: Option<PathBuf>,
     det_config_path: Option<PathBuf>,
     rec_config_path: Option<PathBuf>,
+    det_model_bytes: Option<Arc<[u8]>>,
+    rec_model_bytes: Option<Arc<[u8]>>,
+    dictionary_text: Option<Arc<str>>,
+    det_config_yaml: Option<Arc<str>>,
+    rec_config_yaml: Option<Arc<str>>,
+    doc_orientation_bytes: Option<(Arc<[u8]>, Arc<str>)>,
+    textline_orientation_bytes: Option<(Arc<[u8]>, Arc<str>)>,
     det_limit_side_len: u32,
     det_limit_type: DetLimitType,
     det_max_side_limit: u32,
@@ -674,6 +715,13 @@ impl Default for OcrEngineBuilder {
             dictionary_path: None,
             det_config_path: None,
             rec_config_path: None,
+            det_model_bytes: None,
+            rec_model_bytes: None,
+            dictionary_text: None,
+            det_config_yaml: None,
+            rec_config_yaml: None,
+            doc_orientation_bytes: None,
+            textline_orientation_bytes: None,
             det_limit_side_len: pre.limit_side_len,
             det_limit_type: pre.limit_type,
             det_max_side_limit: pre.max_side_limit,
@@ -701,12 +749,14 @@ impl OcrEngineBuilder {
     /// Sets the path to the DBNet detection ONNX model.
     pub fn det_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.det_model_path = Some(path.as_ref().to_path_buf());
+        self.det_model_bytes = None;
         self
     }
 
     /// Sets the path to the CTC recognition ONNX model.
     pub fn rec_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.rec_model_path = Some(path.as_ref().to_path_buf());
+        self.rec_model_bytes = None;
         self
     }
 
@@ -717,6 +767,7 @@ impl OcrEngineBuilder {
     /// `PostProcess.character_dict` holds the characters.
     pub fn dictionary_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.dictionary_path = Some(path.as_ref().to_path_buf());
+        self.dictionary_text = None;
         self
     }
 
@@ -725,6 +776,8 @@ impl OcrEngineBuilder {
     pub fn det_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         let dir = dir.as_ref();
         self.det_model_path = Some(dir.join(PADDLE_MODEL_FILE));
+        self.det_model_bytes = None;
+        self.det_config_yaml = None;
         let config = dir.join(PADDLE_CONFIG_FILE);
         self.det_config_path = config.exists().then_some(config);
         self
@@ -737,8 +790,49 @@ impl OcrEngineBuilder {
     pub fn rec_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         let dir = dir.as_ref();
         self.rec_model_path = Some(dir.join(PADDLE_MODEL_FILE));
+        self.rec_model_bytes = None;
+        self.rec_config_yaml = None;
         let config = dir.join(PADDLE_CONFIG_FILE);
         self.rec_config_path = config.exists().then_some(config);
+        self
+    }
+
+    /// Uses a DBNet detection ONNX model held in memory instead of a file,
+    /// e.g. bytes fetched by a browser. Replaces any configured path.
+    pub fn det_model_bytes(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.det_model_bytes = Some(Arc::from(bytes.into()));
+        self.det_model_path = None;
+        self
+    }
+
+    /// Uses a CTC recognition ONNX model held in memory instead of a file.
+    pub fn rec_model_bytes(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.rec_model_bytes = Some(Arc::from(bytes.into()));
+        self.rec_model_path = None;
+        self
+    }
+
+    /// Uses the text of a detection `inference.yml` held in memory
+    /// (same effect as [`det_config_path`](Self::det_config_path)).
+    pub fn det_config_yaml(mut self, yaml: impl Into<String>) -> Self {
+        self.det_config_yaml = Some(Arc::from(yaml.into()));
+        self.det_config_path = None;
+        self
+    }
+
+    /// Uses the text of a recognition `inference.yml` held in memory (same
+    /// effect as [`rec_config_path`](Self::rec_config_path), including the
+    /// embedded dictionary when no other dictionary is configured).
+    pub fn rec_config_yaml(mut self, yaml: impl Into<String>) -> Self {
+        self.rec_config_yaml = Some(Arc::from(yaml.into()));
+        self.rec_config_path = None;
+        self
+    }
+
+    /// Uses a plain text dictionary (one character per line) held in memory.
+    pub fn dictionary_text(mut self, text: impl Into<String>) -> Self {
+        self.dictionary_text = Some(Arc::from(text.into()));
+        self.dictionary_path = None;
         self
     }
 
@@ -746,6 +840,7 @@ impl OcrEngineBuilder {
     /// normalisation) from a PaddleOCR `inference.yml`.
     pub fn det_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.det_config_path = Some(path.as_ref().to_path_buf());
+        self.det_config_yaml = None;
         self
     }
 
@@ -754,6 +849,7 @@ impl OcrEngineBuilder {
     /// `inference.yml`.
     pub fn rec_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.rec_config_path = Some(path.as_ref().to_path_buf());
+        self.rec_config_yaml = None;
         self
     }
 
@@ -847,6 +943,19 @@ impl OcrEngineBuilder {
     /// polygons are mapped back to the input image's coordinates.
     pub fn doc_orientation_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         self.doc_orientation_dir = Some(dir.as_ref().to_path_buf());
+        self.doc_orientation_bytes = None;
+        self
+    }
+
+    /// Same as [`doc_orientation_model_dir`](Self::doc_orientation_model_dir)
+    /// with the ONNX bytes and `inference.yml` text held in memory.
+    pub fn doc_orientation_model_bytes(
+        mut self,
+        model: impl Into<Vec<u8>>,
+        config_yaml: impl Into<String>,
+    ) -> Self {
+        self.doc_orientation_bytes = Some((Arc::from(model.into()), Arc::from(config_yaml.into())));
+        self.doc_orientation_dir = None;
         self
     }
 
@@ -855,6 +964,21 @@ impl OcrEngineBuilder {
     /// upside down is rotated by 180 degrees before recognition.
     pub fn textline_orientation_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         self.textline_orientation_dir = Some(dir.as_ref().to_path_buf());
+        self.textline_orientation_bytes = None;
+        self
+    }
+
+    /// Same as
+    /// [`textline_orientation_model_dir`](Self::textline_orientation_model_dir)
+    /// with the ONNX bytes and `inference.yml` text held in memory.
+    pub fn textline_orientation_model_bytes(
+        mut self,
+        model: impl Into<Vec<u8>>,
+        config_yaml: impl Into<String>,
+    ) -> Self {
+        self.textline_orientation_bytes =
+            Some((Arc::from(model.into()), Arc::from(config_yaml.into())));
+        self.textline_orientation_dir = None;
         self
     }
 
@@ -872,18 +996,29 @@ impl OcrEngineBuilder {
 
     /// Consumes the builder and attempts to construct an [`OcrEngine`].
     pub fn build(self) -> Result<OcrEngine, OcrError> {
-        let det_model_path = self.det_model_path.ok_or(OcrError::MissingField {
-            field: "det_model_path",
-        })?;
-        let rec_model_path = self.rec_model_path.ok_or(OcrError::MissingField {
-            field: "rec_model_path",
-        })?;
-        let dictionary_path = self
-            .dictionary_path
-            .or_else(|| self.rec_config_path.clone())
-            .ok_or(OcrError::MissingField {
+        if self.det_model_path.is_none() && self.det_model_bytes.is_none() {
+            return Err(OcrError::MissingField {
+                field: "det_model_path",
+            });
+        }
+        if self.rec_model_path.is_none() && self.rec_model_bytes.is_none() {
+            return Err(OcrError::MissingField {
+                field: "rec_model_path",
+            });
+        }
+        let dictionary_source = if let Some(text) = &self.dictionary_text {
+            DictionarySource::Text(Arc::clone(text))
+        } else if let Some(path) = &self.dictionary_path {
+            DictionarySource::Path(path.clone())
+        } else if let Some(yaml) = &self.rec_config_yaml {
+            DictionarySource::Yaml(Arc::clone(yaml))
+        } else if let Some(path) = &self.rec_config_path {
+            DictionarySource::Path(path.clone())
+        } else {
+            return Err(OcrError::MissingField {
                 field: "dictionary_path",
-            })?;
+            });
+        };
 
         if self.rec_batch_size == 0 {
             return Err(OcrError::InvalidConfiguration {
@@ -891,20 +1026,24 @@ impl OcrEngineBuilder {
             });
         }
 
-        verify_file_exists(&det_model_path)?;
-        verify_file_exists(&rec_model_path)?;
-        verify_file_exists(&dictionary_path)?;
+        if let Some(path) = &self.det_model_path {
+            verify_file_exists(path)?;
+        }
+        if let Some(path) = &self.rec_model_path {
+            verify_file_exists(path)?;
+        }
+        if let DictionarySource::Path(path) = &dictionary_source {
+            verify_file_exists(path)?;
+        }
 
-        let det_model_config = self
-            .det_config_path
-            .as_deref()
-            .map(load_model_config)
-            .transpose()?;
-        let rec_model_config = self
-            .rec_config_path
-            .as_deref()
-            .map(load_model_config)
-            .transpose()?;
+        let det_model_config = load_optional_config(
+            self.det_config_yaml.as_deref(),
+            self.det_config_path.as_deref(),
+        )?;
+        let rec_model_config = load_optional_config(
+            self.rec_config_yaml.as_deref(),
+            self.rec_config_path.as_deref(),
+        )?;
 
         let mut config = OcrEngineConfig::default();
         config.det_preprocessor.limit_side_len = self.det_limit_side_len;
@@ -932,43 +1071,59 @@ impl OcrEngineBuilder {
             apply_rec_model_config(&mut config, rec_config)?;
         }
 
-        let det_session =
-            DetInferenceSession::load(&det_model_path).map_err(|source| OcrError::ModelLoad {
-                source,
-                path: det_model_path.clone(),
-            })?;
-        let rec_session = RecInferenceSession::load_with_input_height(
-            &rec_model_path,
-            config.rec_preprocessor.target_height,
-        )
+        let det_session = match (&self.det_model_bytes, &self.det_model_path) {
+            (Some(bytes), _) => DetInferenceSession::from_bytes(bytes),
+            (None, Some(path)) => DetInferenceSession::load(path),
+            (None, None) => unreachable!("checked above"),
+        }
         .map_err(|source| OcrError::ModelLoad {
             source,
-            path: rec_model_path.clone(),
+            path: origin_path(self.det_model_path.as_deref()),
+        })?;
+        let input_height = config.rec_preprocessor.target_height;
+        let rec_session = match (&self.rec_model_bytes, &self.rec_model_path) {
+            (Some(bytes), _) => {
+                RecInferenceSession::from_bytes_with_input_height(bytes, input_height)
+            }
+            (None, Some(path)) => RecInferenceSession::load_with_input_height(path, input_height),
+            (None, None) => unreachable!("checked above"),
+        }
+        .map_err(|source| OcrError::ModelLoad {
+            source,
+            path: origin_path(self.rec_model_path.as_deref()),
         })?;
 
         det_session.set_plan_cache_capacity(self.det_plan_cache_capacity);
         rec_session.set_plan_cache_capacity(self.rec_plan_cache_capacity);
 
-        let mut dictionary = RecDictionary::from_path(&dictionary_path)?;
+        let mut dictionary = match &dictionary_source {
+            DictionarySource::Path(path) => RecDictionary::from_path(path)?,
+            DictionarySource::Text(text) => RecDictionary::from_text(text)?,
+            DictionarySource::Yaml(yaml) => RecDictionary::from_inference_yml_str(yaml)?,
+        };
         if self.rec_use_space_char {
             dictionary = dictionary.with_space_char();
         }
         config.rec_postprocessor.blank_id = dictionary.blank_id();
 
-        let doc_orientation = self
-            .doc_orientation_dir
-            .as_deref()
-            .map(load_orientation_classifier)
-            .transpose()?;
-        let textline_orientation = self
-            .textline_orientation_dir
-            .as_deref()
-            .map(load_orientation_classifier)
-            .transpose()?;
+        let doc_orientation = load_optional_classifier(
+            self.doc_orientation_bytes.as_ref(),
+            self.doc_orientation_dir.as_deref(),
+        )?;
+        let textline_orientation = load_optional_classifier(
+            self.textline_orientation_bytes.as_ref(),
+            self.textline_orientation_dir.as_deref(),
+        )?;
 
+        let dictionary_path = match dictionary_source {
+            DictionarySource::Path(path) => Some(path),
+            _ => None,
+        };
         let mut engine = OcrEngine::new(
-            det_model_path,
-            rec_model_path,
+            self.det_model_path
+                .filter(|_| self.det_model_bytes.is_none()),
+            self.rec_model_path
+                .filter(|_| self.rec_model_bytes.is_none()),
             dictionary_path,
             det_session,
             rec_session,
@@ -978,6 +1133,51 @@ impl OcrEngineBuilder {
         engine.doc_orientation = doc_orientation;
         engine.textline_orientation = textline_orientation;
         Ok(engine)
+    }
+}
+
+/// Where the recognition dictionary comes from.
+enum DictionarySource {
+    Path(PathBuf),
+    Text(Arc<str>),
+    Yaml(Arc<str>),
+}
+
+/// Path used in error messages: the file path, or `<memory>` for bytes.
+fn origin_path(path: Option<&Path>) -> PathBuf {
+    path.map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(crate::dictionary::IN_MEMORY))
+}
+
+fn load_optional_config(
+    yaml: Option<&str>,
+    path: Option<&Path>,
+) -> Result<Option<PaddleInferenceConfig>, OcrError> {
+    match (yaml, path) {
+        (Some(yaml), _) => PaddleInferenceConfig::from_yaml_str(yaml)
+            .map(Some)
+            .map_err(|source| OcrError::ModelConfig {
+                source,
+                path: origin_path(None),
+            }),
+        (None, Some(path)) => load_model_config(path).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+fn load_optional_classifier(
+    bytes: Option<&(Arc<[u8]>, Arc<str>)>,
+    dir: Option<&Path>,
+) -> Result<Option<OrientationClassifier>, OcrError> {
+    match (bytes, dir) {
+        (Some((model, yaml)), _) => OrientationClassifier::from_bytes(model, yaml)
+            .map(Some)
+            .map_err(|source| OcrError::OrientationLoad {
+                source,
+                path: origin_path(None),
+            }),
+        (None, Some(dir)) => load_orientation_classifier(dir).map(Some),
+        (None, None) => Ok(None),
     }
 }
 
@@ -1086,13 +1286,17 @@ fn verify_file_exists(path: &Path) -> Result<(), OcrError> {
 
 #[derive(Debug)]
 struct EngineAssets {
-    det_model_path: PathBuf,
-    rec_model_path: PathBuf,
-    dictionary_path: PathBuf,
+    det_model_path: Option<PathBuf>,
+    rec_model_path: Option<PathBuf>,
+    dictionary_path: Option<PathBuf>,
 }
 
 impl EngineAssets {
-    fn new(det_model_path: PathBuf, rec_model_path: PathBuf, dictionary_path: PathBuf) -> Self {
+    fn new(
+        det_model_path: Option<PathBuf>,
+        rec_model_path: Option<PathBuf>,
+        dictionary_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             det_model_path,
             rec_model_path,
@@ -1100,16 +1304,16 @@ impl EngineAssets {
         }
     }
 
-    fn det_model_path(&self) -> &Path {
-        self.det_model_path.as_path()
+    fn det_model_path(&self) -> Option<&Path> {
+        self.det_model_path.as_deref()
     }
 
-    fn rec_model_path(&self) -> &Path {
-        self.rec_model_path.as_path()
+    fn rec_model_path(&self) -> Option<&Path> {
+        self.rec_model_path.as_deref()
     }
 
-    fn dictionary_path(&self) -> &Path {
-        self.dictionary_path.as_path()
+    fn dictionary_path(&self) -> Option<&Path> {
+        self.dictionary_path.as_deref()
     }
 }
 
@@ -1394,9 +1598,9 @@ mod tests {
             .build()
             .expect("engine should build successfully");
 
-        assert_eq!(engine.det_model_path(), det.as_path());
-        assert_eq!(engine.rec_model_path(), rec.as_path());
-        assert_eq!(engine.dictionary_path(), dict.as_path());
+        assert_eq!(engine.det_model_path(), Some(det.as_path()));
+        assert_eq!(engine.rec_model_path(), Some(rec.as_path()));
+        assert_eq!(engine.dictionary_path(), Some(dict.as_path()));
         assert_eq!(engine.rec_batch_size(), 6);
     }
 

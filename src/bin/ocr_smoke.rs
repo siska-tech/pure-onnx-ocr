@@ -104,9 +104,15 @@ fn run() -> Result<(), RunError> {
     let results = run.results;
 
     println!("Input image: {}", image_path.display());
-    println!("Detection model: {}", engine.det_model_path().display());
-    println!("Recognition model: {}", engine.rec_model_path().display());
-    println!("Dictionary: {}", engine.dictionary_path().display());
+    println!(
+        "Detection model: {}",
+        display_source(engine.det_model_path())
+    );
+    println!(
+        "Recognition model: {}",
+        display_source(engine.rec_model_path())
+    );
+    println!("Dictionary: {}", display_source(engine.dictionary_path()));
     println!("Recognition batch size: {}", engine.rec_batch_size());
     if let Some(angle) = doc_orientation_angle {
         println!(
@@ -529,4 +535,9 @@ fn init_logger(verbose: bool) {
             log::LevelFilter::Warn
         });
     }
+}
+
+fn display_source(path: Option<&std::path::Path>) -> String {
+    path.map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<memory>".to_string())
 }

@@ -11,7 +11,7 @@
 //! Both are image classifiers with ImageNet normalisation on RGB input and a
 //! softmax output of shape `[N, classes]`.
 
-use crate::onnx_model::{load_paddle_onnx, PlanCache};
+use crate::onnx_model::{load_paddle_onnx, load_paddle_onnx_from_bytes, PlanCache};
 use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::preprocessing::{IMAGENET_MEAN, IMAGENET_STD};
 use image::{imageops, imageops::FilterType, RgbImage};
@@ -150,6 +150,30 @@ impl OrientationClassifier {
                 path: config_path.to_path_buf(),
             }
         })?;
+        let model = load_paddle_onnx(model_path.as_ref()).map_err(OrientationError::Model)?;
+        Self::from_parts(model, config, config_path)
+    }
+
+    /// Loads a classifier from ONNX bytes and the text of its
+    /// `inference.yml`, both held in memory (for example fetched by a
+    /// browser).
+    pub fn from_bytes(model_bytes: &[u8], config_yaml: &str) -> Result<Self, OrientationError> {
+        let origin = Path::new(crate::dictionary::IN_MEMORY);
+        let config = PaddleInferenceConfig::from_yaml_str(config_yaml).map_err(|source| {
+            OrientationError::Config {
+                source,
+                path: origin.to_path_buf(),
+            }
+        })?;
+        let model = load_paddle_onnx_from_bytes(model_bytes).map_err(OrientationError::Model)?;
+        Self::from_parts(model, config, origin)
+    }
+
+    fn from_parts(
+        model: InferenceModel,
+        config: PaddleInferenceConfig,
+        config_path: &Path,
+    ) -> Result<Self, OrientationError> {
         let missing = |field| OrientationError::MissingConfig {
             path: config_path.to_path_buf(),
             field,
@@ -171,7 +195,6 @@ impl OrientationClassifier {
             .map(|label| label_to_angle(label))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let model = load_paddle_onnx(model_path.as_ref()).map_err(OrientationError::Model)?;
         Ok(Self {
             base_model: model,
             cache: RefCell::new(PlanCache::new(2)),

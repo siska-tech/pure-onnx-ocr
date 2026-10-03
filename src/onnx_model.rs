@@ -22,6 +22,17 @@ pub(crate) fn load_paddle_onnx(model_path: &Path) -> TractResult<InferenceModel>
     Ok(model)
 }
 
+/// Same as [`load_paddle_onnx`] for an ONNX graph held in memory (for
+/// example fetched by a browser).
+pub(crate) fn load_paddle_onnx_from_bytes(bytes: &[u8]) -> TractResult<InferenceModel> {
+    let mut reader = std::io::Cursor::new(bytes);
+    let mut model = tract_onnx::onnx()
+        .with_ignore_output_shapes(true)
+        .model_for_read(&mut reader)?;
+    clear_intermediate_facts(&mut model)?;
+    Ok(model)
+}
+
 fn clear_intermediate_facts(model: &mut InferenceModel) -> TractResult<()> {
     let inputs: Vec<OutletId> = model.input_outlets()?.to_vec();
     for node_id in 0..model.nodes().len() {

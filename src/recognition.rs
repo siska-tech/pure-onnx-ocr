@@ -46,9 +46,31 @@ impl RecInferenceSession {
             return Err(anyhow!("recognition input height must be positive"));
         }
         log::info!("[RecInfer] Loading recognition model from {:?}", model_path);
+        Self::from_model(
+            crate::onnx_model::load_paddle_onnx(model_path)?,
+            input_height,
+        )
+    }
 
-        let mut inference_model = crate::onnx_model::load_paddle_onnx(model_path)?;
+    /// Loads a recognition model from ONNX bytes held in memory.
+    pub fn from_bytes_with_input_height(
+        model_bytes: &[u8],
+        input_height: u32,
+    ) -> TractResult<Self> {
+        if input_height == 0 {
+            return Err(anyhow!("recognition input height must be positive"));
+        }
+        log::info!(
+            "[RecInfer] Loading recognition model from memory ({} bytes)",
+            model_bytes.len()
+        );
+        Self::from_model(
+            crate::onnx_model::load_paddle_onnx_from_bytes(model_bytes)?,
+            input_height,
+        )
+    }
 
+    fn from_model(mut inference_model: InferenceModel, input_height: u32) -> TractResult<Self> {
         let batch = inference_model.symbols.sym("batch");
         let width = inference_model.symbols.sym("width");
         inference_model.set_input_fact(

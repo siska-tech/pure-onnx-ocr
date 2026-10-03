@@ -6,6 +6,8 @@ use std::{
 };
 
 const BLANK_TOKEN: &str = "blank";
+/// Placeholder path reported in errors for dictionaries loaded from memory.
+pub const IN_MEMORY: &str = "<memory>";
 
 /// Errors that can occur while loading or using the recognition dictionary.
 #[derive(Debug)]
@@ -107,11 +109,29 @@ impl RecDictionary {
     /// occurrence.
     pub fn from_inference_yml(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
         let path = path.as_ref();
-        let config =
-            PaddleInferenceConfig::from_path(path).map_err(|source| DictionaryError::Config {
+        let text = fs::read_to_string(path).map_err(|source| DictionaryError::Io {
+            source,
+            path: path.to_path_buf(),
+        })?;
+        Self::from_inference_yml_str_with_origin(&text, path)
+    }
+
+    /// Same as [`RecDictionary::from_inference_yml`] for the contents of an
+    /// `inference.yml` held in memory.
+    pub fn from_inference_yml_str(yaml: &str) -> Result<Self, DictionaryError> {
+        Self::from_inference_yml_str_with_origin(yaml, Path::new(IN_MEMORY))
+    }
+
+    fn from_inference_yml_str_with_origin(
+        yaml: &str,
+        path: &Path,
+    ) -> Result<Self, DictionaryError> {
+        let config = PaddleInferenceConfig::from_yaml_str(yaml).map_err(|source| {
+            DictionaryError::Config {
                 source,
                 path: path.to_path_buf(),
-            })?;
+            }
+        })?;
         let tokens =
             config
                 .character_dict
@@ -173,7 +193,16 @@ impl RecDictionary {
             source,
             path: path.to_path_buf(),
         })?;
+        Self::from_text_with_origin(&contents, path)
+    }
 
+    /// Same as [`RecDictionary::from_text_file`] for dictionary text held in
+    /// memory (one character per line).
+    pub fn from_text(contents: &str) -> Result<Self, DictionaryError> {
+        Self::from_text_with_origin(contents, Path::new(IN_MEMORY))
+    }
+
+    fn from_text_with_origin(contents: &str, path: &Path) -> Result<Self, DictionaryError> {
         let mut tokens = Vec::new();
         let mut reverse = HashMap::new();
 
