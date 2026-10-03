@@ -30,12 +30,11 @@ fixtures/
     PP-LCNet_x1_0_textline_ori/   inference.onnx  inference.yml   # optional
     PP-LCNet_x0_25_textline_ori/  inference.onnx  inference.yml   # optional
   images/
-    demo.png
     general_ocr_002.jpg
+    ja.jpg                    # --all only (ocr_bench, parity references)
 ```
 
-The `demo.png` image should contain readable text that the PP-OCRv5 models can
-detect. The ONNX models are the standard PaddleOCR exports. They can be copied
+The ONNX models are the standard PaddleOCR exports. They can be copied
 from the `models/ppocrv5/` directory used during development, or downloaded
 from Hugging Face (`PaddlePaddle/PP-OCRv5_mobile_{det,rec}_onnx`; rename
 `inference.onnx` to `det.onnx` / `rec.onnx`).
