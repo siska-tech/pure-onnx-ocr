@@ -1,17 +1,34 @@
+use crate::paddle_config::ColorOrder;
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
-use ndarray::{s, Array3, Array4, Axis};
+use ndarray::{s, Array4};
 use tract_onnx::prelude::Tensor;
+
+/// ImageNet mean used by PaddleOCR detection models (`NormalizeImage.mean`).
+pub const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+/// ImageNet std used by PaddleOCR detection models (`NormalizeImage.std`).
+pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Configuration parameters for `DetPreProcessor`.
 #[derive(Debug, Clone, Copy)]
 pub struct DetPreProcessorConfig {
+    /// Longest side (in pixels) the image is downscaled to before inference.
     pub limit_side_len: u32,
+    /// Per-channel mean subtracted after scaling pixels to `[0, 1]`.
+    /// Indexed in model channel order (see `color_order`).
+    pub mean: [f32; 3],
+    /// Per-channel standard deviation applied after mean subtraction.
+    pub std: [f32; 3],
+    /// Channel order of the model input tensor.
+    pub color_order: ColorOrder,
 }
 
 impl Default for DetPreProcessorConfig {
     fn default() -> Self {
         Self {
             limit_side_len: 960,
+            mean: IMAGENET_MEAN,
+            std: IMAGENET_STD,
+            color_order: ColorOrder::Bgr,
         }
     }
 }
@@ -69,27 +86,38 @@ impl DetPreProcessor {
         let resized = if resized_w == orig_w && resized_h == orig_h {
             image.clone()
         } else {
-            image.resize_exact(resized_w, resized_h, FilterType::Lanczos3)
+            // Bilinear filtering mirrors the `cv2.resize` default used by PaddleOCR.
+            image.resize_exact(resized_w, resized_h, FilterType::Triangle)
         };
 
         let rgb_image = resized.to_rgb8();
         let padded_w = round_up_to_multiple(resized_w, 32);
         let padded_h = round_up_to_multiple(resized_h, 32);
 
-        let mut array_hwc = Array3::<f32>::zeros((padded_h as usize, padded_w as usize, 3));
+        // Padding stays at 0.0, i.e. the normalised mean colour, so the padded
+        // border does not introduce artificial edges.
+        let mut array = Array4::<f32>::zeros((1, 3, padded_h as usize, padded_w as usize));
+        let order = self.config.color_order;
+        let mut scale = [0f32; 3];
+        let mut offset = [0f32; 3];
+        for c in 0..3 {
+            let std = if self.config.std[c].abs() > f32::EPSILON {
+                self.config.std[c]
+            } else {
+                1.0
+            };
+            scale[c] = 1.0 / (255.0 * std);
+            offset[c] = self.config.mean[c] / std;
+        }
 
-        for y in 0..resized_h as usize {
-            for x in 0..resized_w as usize {
-                let pixel = rgb_image.get_pixel(x as u32, y as u32);
-                for c in 0..3 {
-                    array_hwc[[y, x, c]] = pixel[c] as f32 / 255.0;
-                }
+        for (x, y, pixel) in rgb_image.enumerate_pixels() {
+            for c in 0..3 {
+                let value = pixel[order.source_channel(c)] as f32;
+                array[[0, c, y as usize, x as usize]] = value * scale[c] - offset[c];
             }
         }
 
-        let array_chw = array_hwc.permuted_axes([2, 0, 1]);
-        let array_nchw = array_chw.insert_axis(Axis(0));
-        let tensor: Tensor = array_nchw.into_dyn().into();
+        let tensor: Tensor = array.into_dyn().into();
 
         Ok(PreprocessedDetInput {
             tensor,
@@ -140,13 +168,32 @@ pub struct RecTextRegion {
 }
 
 /// Configuration parameters for recognition preprocessing.
+///
+/// Defaults mirror PaddleOCR 3.x (`OCRReisizeNormImg` with
+/// `RecResizeImg.image_shape = [3, 48, 320]`): each crop is resized to the
+/// target height keeping its aspect ratio, the batch is padded to the widest
+/// crop (at least `max_width`, at most `max_dynamic_width`), and pixels are
+/// normalised with `(x / 255 - 0.5) / 0.5` in BGR order.
 #[derive(Debug, Clone)]
 pub struct RecPreProcessorConfig {
+    /// Input height expected by the recognition model.
     pub target_height: u32,
+    /// Minimum width of the batch tensor (PaddleOCR `image_shape[2]`).
     pub max_width: u32,
+    /// Upper bound for the batch tensor width. Crops wider than this are
+    /// squeezed horizontally. Set it equal to `max_width` to force a fixed
+    /// input width.
+    pub max_dynamic_width: u32,
+    /// The batch width is rounded up to a multiple of this value so that
+    /// compiled inference plans can be reused across batches.
+    pub width_alignment: u32,
     pub mean: [f32; 3],
     pub std: [f32; 3],
+    /// Raw pixel value in `[0, 1]` used for padding. The default `0.5`
+    /// becomes `0.0` after normalisation, matching PaddleOCR's zero padding.
     pub pad_value: [f32; 3],
+    /// Channel order of the model input tensor.
+    pub color_order: ColorOrder,
 }
 
 impl Default for RecPreProcessorConfig {
@@ -154,9 +201,12 @@ impl Default for RecPreProcessorConfig {
         Self {
             target_height: 48,
             max_width: 320,
+            max_dynamic_width: 3200,
+            width_alignment: 32,
             mean: [0.5, 0.5, 0.5],
             std: [0.5, 0.5, 0.5],
-            pad_value: [0.0, 0.0, 0.0],
+            pad_value: [0.5, 0.5, 0.5],
+            color_order: ColorOrder::Bgr,
         }
     }
 }
@@ -241,6 +291,11 @@ impl RecPreProcessor {
         Self { config }
     }
 
+    /// Returns the configuration used by this preprocessor.
+    pub fn config(&self) -> &RecPreProcessorConfig {
+        &self.config
+    }
+
     pub fn process(
         &self,
         image: &DynamicImage,
@@ -259,26 +314,6 @@ impl RecPreProcessor {
             return Err(RecPreProcessorError::EmptyImage);
         }
 
-        let target_height = self.config.target_height;
-        let max_width = self.config.max_width;
-        let batch_size = regions.len();
-
-        let mut batch =
-            Array4::<f32>::zeros((batch_size, 3, target_height as usize, max_width as usize));
-
-        for sample in 0..batch_size {
-            for channel in 0..3 {
-                let pad = normalize_value(
-                    self.config.pad_value[channel],
-                    self.config.mean[channel],
-                    self.config.std[channel],
-                );
-                batch.slice_mut(s![sample, channel, .., ..]).fill(pad);
-            }
-        }
-
-        let mut valid_widths = Vec::with_capacity(batch_size);
-
         for (index, region) in regions.iter().copied().enumerate() {
             if region.width == 0 || region.height == 0 {
                 return Err(RecPreProcessorError::ZeroArea { index });
@@ -295,31 +330,49 @@ impl RecPreProcessor {
                     region,
                 });
             }
+        }
 
-            let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
-            let aspect_ratio = region.width as f32 / region.height as f32;
-            let mut target_width = (aspect_ratio * target_height as f32)
-                .round()
-                .clamp(1.0, max_width as f32) as u32;
-            if target_width == 0 {
-                target_width = 1;
+        let target_height = self.config.target_height;
+        let desired_widths: Vec<u32> = regions
+            .iter()
+            .map(|region| {
+                let aspect_ratio = region.width as f64 / region.height as f64;
+                (aspect_ratio * target_height as f64).ceil().max(1.0) as u32
+            })
+            .collect();
+        let max_width = self.batch_width(desired_widths.iter().copied().max().unwrap_or(1));
+        let batch_size = regions.len();
+
+        let mut batch =
+            Array4::<f32>::zeros((batch_size, 3, target_height as usize, max_width as usize));
+
+        for sample in 0..batch_size {
+            for channel in 0..3 {
+                let pad = normalize_value(
+                    self.config.pad_value[channel],
+                    self.config.mean[channel],
+                    self.config.std[channel],
+                );
+                batch.slice_mut(s![sample, channel, .., ..]).fill(pad);
             }
+        }
 
-            let resized = cropped.resize_exact(target_width, target_height, FilterType::Lanczos3);
+        let width_cap = max_width.min(self.config.max_dynamic_width.max(self.config.max_width));
+        let order = self.config.color_order;
+        let mut valid_widths = Vec::with_capacity(batch_size);
+
+        for (index, region) in regions.iter().copied().enumerate() {
+            let target_width = desired_widths[index].clamp(1, width_cap);
+            let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
+            // Bilinear filtering mirrors the `cv2.resize` default used by PaddleOCR.
+            let resized = cropped.resize_exact(target_width, target_height, FilterType::Triangle);
             let rgb_image = resized.to_rgb8();
 
-            for y in 0..target_height as usize {
-                for x in 0..target_width as usize {
-                    let pixel = rgb_image.get_pixel(x as u32, y as u32);
-                    for channel in 0..3 {
-                        let value = pixel[channel] as f32 / 255.0;
-                        let normalized = normalize_value(
-                            value,
-                            self.config.mean[channel],
-                            self.config.std[channel],
-                        );
-                        batch[[index, channel, y, x]] = normalized;
-                    }
+            for (x, y, pixel) in rgb_image.enumerate_pixels() {
+                for channel in 0..3 {
+                    let value = pixel[order.source_channel(channel)] as f32 / 255.0;
+                    batch[[index, channel, y as usize, x as usize]] =
+                        normalize_value(value, self.config.mean[channel], self.config.std[channel]);
                 }
             }
 
@@ -332,6 +385,15 @@ impl RecPreProcessor {
             valid_widths,
             max_width,
         })
+    }
+
+    /// Computes the batch tensor width for the widest desired crop width.
+    fn batch_width(&self, widest: u32) -> u32 {
+        let min_width = self.config.max_width;
+        let limit = self.config.max_dynamic_width.max(min_width);
+        let width = widest.clamp(min_width, limit);
+        let alignment = self.config.width_alignment.max(1);
+        round_up_to_multiple(width, alignment)
     }
 }
 
@@ -392,17 +454,79 @@ mod tests {
         let image = solid_image(320, 320, 255);
         let preprocessor = DetPreProcessor::new(DetPreProcessorConfig {
             limit_side_len: 320,
+            ..DetPreProcessorConfig::default()
         });
 
         let result = preprocessor.process(&image).unwrap();
         assert_eq!(result.tensor.shape(), &[1, 3, 320, 320]);
 
-        let array = result.tensor.to_array_view::<f32>().unwrap();
-        let min = array.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max = array.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        assert!(min >= 0.0);
-        assert!(max <= 1.0);
-        assert!((max - 1.0).abs() < 1e-6);
+        let array = result.tensor.to_plain_array_view::<f32>().unwrap();
+        // solid_image(255) yields RGB (255, 254, 255); tensor channels are B, G, R.
+        let bgr = [255.0f32, 254.0, 255.0];
+        for c in 0..3 {
+            let expected = (bgr[c] / 255.0 - IMAGENET_MEAN[c]) / IMAGENET_STD[c];
+            assert!((array[[0, c, 10, 10]] - expected).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn detection_uses_bgr_channel_order_by_default() {
+        let buffer = ImageBuffer::from_pixel(32, 32, Rgb([255u8, 0, 0]));
+        let image = DynamicImage::ImageRgb8(buffer);
+        let preprocessor = DetPreProcessor::new(DetPreProcessorConfig::default());
+        let result = preprocessor.process(&image).unwrap();
+        let array = result.tensor.to_plain_array_view::<f32>().unwrap();
+
+        // Red lands in the last channel (B, G, R).
+        let red = (1.0 - IMAGENET_MEAN[2]) / IMAGENET_STD[2];
+        let blue = (0.0 - IMAGENET_MEAN[0]) / IMAGENET_STD[0];
+        assert!((array[[0, 2, 0, 0]] - red).abs() < 1e-5);
+        assert!((array[[0, 0, 0, 0]] - blue).abs() < 1e-5);
+    }
+
+    #[test]
+    fn recognition_width_grows_with_long_regions() {
+        let image = gradient_image(1200, 60);
+        let preprocessor = RecPreProcessor::new(RecPreProcessorConfig::default());
+        let regions = vec![
+            RecTextRegion {
+                x: 0,
+                y: 0,
+                width: 1200,
+                height: 48,
+            },
+            RecTextRegion {
+                x: 0,
+                y: 0,
+                width: 96,
+                height: 48,
+            },
+        ];
+        let batch = preprocessor.process(&image, &regions).unwrap();
+
+        assert_eq!(batch.max_width, 1216);
+        assert_eq!(batch.tensor.shape(), &[2, 3, 48, 1216]);
+        assert_eq!(batch.valid_widths, vec![1200, 96]);
+    }
+
+    #[test]
+    fn recognition_width_is_capped() {
+        let image = gradient_image(1200, 60);
+        let config = RecPreProcessorConfig {
+            max_dynamic_width: 320,
+            ..RecPreProcessorConfig::default()
+        };
+        let preprocessor = RecPreProcessor::new(config);
+        let regions = vec![RecTextRegion {
+            x: 0,
+            y: 0,
+            width: 1200,
+            height: 48,
+        }];
+        let batch = preprocessor.process(&image, &regions).unwrap();
+
+        assert_eq!(batch.max_width, 320);
+        assert_eq!(batch.valid_widths, vec![320]);
     }
 
     #[test]
@@ -440,7 +564,7 @@ mod tests {
         assert_eq!(batch.tensor.shape(), &expected_shape);
         assert_eq!(batch.valid_widths, vec![96]);
 
-        let tensor = batch.tensor.to_array_view::<f32>().unwrap();
+        let tensor = batch.tensor.to_plain_array_view::<f32>().unwrap();
         let pad = normalize_value(config.pad_value[0], config.mean[0], config.std[0]);
         assert!(
             (tensor[[0, 0, 0, (config.max_width - 1) as usize]] - pad).abs() < 1e-6,
@@ -480,7 +604,7 @@ mod tests {
 
         assert_eq!(batch.valid_widths, vec![96, 24]);
 
-        let tensor = batch.tensor.to_array_view::<f32>().unwrap();
+        let tensor = batch.tensor.to_plain_array_view::<f32>().unwrap();
         let pad = normalize_value(config.pad_value[0], config.mean[0], config.std[0]);
 
         // Ensure padding column for first sample is untouched.

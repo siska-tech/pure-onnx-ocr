@@ -29,10 +29,29 @@ fn run() -> Result<(), RunError> {
         return Ok(());
     }
 
-    let mut builder = OcrEngineBuilder::new()
-        .det_model_path(&cli.det_model)
-        .rec_model_path(&cli.rec_model)
-        .dictionary_path(&cli.dictionary);
+    let mut builder = OcrEngineBuilder::new();
+    builder = match &cli.det_model_dir {
+        Some(dir) => builder.det_model_dir(dir),
+        None => builder.det_model_path(&cli.det_model),
+    };
+    builder = match &cli.rec_model_dir {
+        Some(dir) => builder.rec_model_dir(dir),
+        None => builder.rec_model_path(&cli.rec_model),
+    };
+    match (&cli.dictionary, &cli.rec_model_dir) {
+        (Some(dictionary), _) => builder = builder.dictionary_path(dictionary),
+        (None, Some(_)) => {}
+        (None, None) => builder = builder.dictionary_path(DEFAULT_DICTIONARY),
+    }
+    if let Some(threshold) = cli.det_thresh {
+        builder = builder.det_threshold(threshold);
+    }
+    if let Some(threshold) = cli.det_box_thresh {
+        builder = builder.det_box_threshold(threshold);
+    }
+    if cli.no_space_char {
+        builder = builder.rec_use_space_char(false);
+    }
 
     if let Some(limit) = cli.det_limit_side_len {
         builder = builder.det_limit_side_len(limit);
@@ -111,7 +130,12 @@ struct Cli {
     image_path: Option<PathBuf>,
     det_model: PathBuf,
     rec_model: PathBuf,
-    dictionary: PathBuf,
+    dictionary: Option<PathBuf>,
+    det_model_dir: Option<PathBuf>,
+    rec_model_dir: Option<PathBuf>,
+    det_thresh: Option<f32>,
+    det_box_thresh: Option<f32>,
+    no_space_char: bool,
     det_limit_side_len: Option<u32>,
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
@@ -132,7 +156,12 @@ impl Cli {
             image_path: None,
             det_model: PathBuf::from(DEFAULT_DET_MODEL),
             rec_model: PathBuf::from(DEFAULT_REC_MODEL),
-            dictionary: PathBuf::from(DEFAULT_DICTIONARY),
+            dictionary: None,
+            det_model_dir: None,
+            rec_model_dir: None,
+            det_thresh: None,
+            det_box_thresh: None,
+            no_space_char: false,
             det_limit_side_len: None,
             det_unclip_ratio: None,
             rec_batch_size: None,
@@ -161,7 +190,26 @@ impl Cli {
                 }
                 "--dictionary" => {
                     let value = next_value("--dictionary", &mut iter)?;
-                    cli.dictionary = PathBuf::from(value);
+                    cli.dictionary = Some(PathBuf::from(value));
+                }
+                "--det-model-dir" => {
+                    let value = next_value("--det-model-dir", &mut iter)?;
+                    cli.det_model_dir = Some(PathBuf::from(value));
+                }
+                "--rec-model-dir" => {
+                    let value = next_value("--rec-model-dir", &mut iter)?;
+                    cli.rec_model_dir = Some(PathBuf::from(value));
+                }
+                "--det-thresh" => {
+                    let value = next_value("--det-thresh", &mut iter)?;
+                    cli.det_thresh = Some(parse_unit_interval("--det-thresh", &value)?);
+                }
+                "--det-box-thresh" => {
+                    let value = next_value("--det-box-thresh", &mut iter)?;
+                    cli.det_box_thresh = Some(parse_unit_interval("--det-box-thresh", &value)?);
+                }
+                "--no-space-char" => {
+                    cli.no_space_char = true;
                 }
                 "--det-limit-side-len" => {
                     let value = next_value("--det-limit-side-len", &mut iter)?;
@@ -246,6 +294,16 @@ impl Cli {
         text.push_str("      --rec-batch-size N        Override recognition batch size (> 0)\n");
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
         text
+    }
+}
+
+fn parse_unit_interval(flag: &str, value: &str) -> Result<f32, RunError> {
+    match value.parse::<f32>() {
+        Ok(parsed) if (0.0..=1.0).contains(&parsed) => Ok(parsed),
+        _ => Err(RunError::cli(format!(
+            "invalid value for {}: `{}` (expected a number between 0 and 1)",
+            flag, value
+        ))),
     }
 }
 

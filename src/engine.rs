@@ -1,6 +1,7 @@
 use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
+use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
@@ -36,6 +37,11 @@ pub enum OcrError {
     ModelLoad { source: TractError, path: PathBuf },
     /// Loading the recognition dictionary failed.
     Dictionary { source: DictionaryError },
+    /// Reading a PaddleOCR `inference.yml` failed.
+    ModelConfig {
+        source: PaddleConfigError,
+        path: PathBuf,
+    },
     /// The provided configuration contained invalid values.
     InvalidConfiguration { message: String },
     /// Failed to decode the input image.
@@ -72,6 +78,9 @@ impl fmt::Display for OcrError {
                 write!(f, "failed to load ONNX model {:?}: {}", path, source)
             }
             OcrError::Dictionary { source } => write!(f, "failed to load dictionary: {}", source),
+            OcrError::ModelConfig { path, source } => {
+                write!(f, "failed to read model config {:?}: {}", path, source)
+            }
             OcrError::InvalidConfiguration { message } => write!(f, "{}", message),
             OcrError::ImageDecode { path, source } => {
                 write!(f, "failed to decode image {:?}: {}", path, source)
@@ -230,6 +239,7 @@ impl Error for OcrError {
             OcrError::Io { source, .. } => Some(source),
             OcrError::ModelLoad { .. } => None,
             OcrError::Dictionary { source } => Some(source),
+            OcrError::ModelConfig { source, .. } => Some(source),
             OcrError::InvalidConfiguration { .. } => None,
             OcrError::ImageDecode { source, .. } => Some(source),
             OcrError::DetectionPreprocess { source } => Some(source),
@@ -466,7 +476,8 @@ impl OcrEngine {
 
         let regions = polygons_to_text_regions(&polygons, image_dims);
         let (sequences, recognition_timings) =
-            self.recognition.run_with_timings(image, &regions)?;
+            self.recognition
+                .run_with_timings(image, &regions, self.config.rec_batch_size)?;
         timings.recognition = recognition_timings;
 
         if sequences.len() != polygons.len() {
@@ -492,26 +503,52 @@ impl OcrEngine {
     }
 }
 
+/// File name of the ONNX graph inside a PaddleOCR 3.x model directory.
+pub const PADDLE_MODEL_FILE: &str = "inference.onnx";
+/// File name of the inference config inside a PaddleOCR 3.x model directory.
+pub const PADDLE_CONFIG_FILE: &str = "inference.yml";
+
 /// Builder for constructing [`OcrEngine`] instances.
+///
+/// Models can be supplied either as individual files
+/// ([`det_model_path`](Self::det_model_path),
+/// [`rec_model_path`](Self::rec_model_path),
+/// [`dictionary_path`](Self::dictionary_path)) or as PaddleOCR 3.x model
+/// directories ([`det_model_dir`](Self::det_model_dir),
+/// [`rec_model_dir`](Self::rec_model_dir)) such as the PP-OCRv6 exports
+/// published on Hugging Face, which contain `inference.onnx` and
+/// `inference.yml`. When a model directory is used, the preprocessing
+/// parameters and the recognition dictionary are read from `inference.yml`.
 #[derive(Debug, Clone)]
 pub struct OcrEngineBuilder {
     det_model_path: Option<PathBuf>,
     rec_model_path: Option<PathBuf>,
     dictionary_path: Option<PathBuf>,
+    det_config_path: Option<PathBuf>,
+    rec_config_path: Option<PathBuf>,
     det_limit_side_len: u32,
     det_unclip_ratio: f32,
+    det_threshold: f32,
+    det_box_threshold: f32,
     rec_batch_size: usize,
+    rec_use_space_char: bool,
 }
 
 impl Default for OcrEngineBuilder {
     fn default() -> Self {
+        let post = DetPostProcessorConfig::default();
         Self {
             det_model_path: None,
             rec_model_path: None,
             dictionary_path: None,
+            det_config_path: None,
+            rec_config_path: None,
             det_limit_side_len: DetPreProcessorConfig::default().limit_side_len,
             det_unclip_ratio: DetPolygonUnclipperConfig::default().unclip_ratio,
+            det_threshold: post.threshold,
+            det_box_threshold: post.box_threshold,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
+            rec_use_space_char: true,
         }
     }
 }
@@ -528,15 +565,56 @@ impl OcrEngineBuilder {
         self
     }
 
-    /// Sets the path to the SVTR recognition ONNX model.
+    /// Sets the path to the CTC recognition ONNX model.
     pub fn rec_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.rec_model_path = Some(path.as_ref().to_path_buf());
         self
     }
 
-    /// Sets the path to the recognition dictionary file.
+    /// Sets the path to the recognition dictionary.
+    ///
+    /// Accepts either a plain text dictionary (one character per line, e.g.
+    /// `ppocrv5_dict.txt`) or a PaddleOCR `inference.yml` whose
+    /// `PostProcess.character_dict` holds the characters.
     pub fn dictionary_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.dictionary_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Uses a PaddleOCR 3.x detection model directory containing
+    /// `inference.onnx` and (optionally) `inference.yml`.
+    pub fn det_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        let dir = dir.as_ref();
+        self.det_model_path = Some(dir.join(PADDLE_MODEL_FILE));
+        let config = dir.join(PADDLE_CONFIG_FILE);
+        self.det_config_path = config.exists().then_some(config);
+        self
+    }
+
+    /// Uses a PaddleOCR 3.x recognition model directory containing
+    /// `inference.onnx` and `inference.yml`. Unless
+    /// [`dictionary_path`](Self::dictionary_path) is set explicitly, the
+    /// dictionary embedded in `inference.yml` is used.
+    pub fn rec_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        let dir = dir.as_ref();
+        self.rec_model_path = Some(dir.join(PADDLE_MODEL_FILE));
+        let config = dir.join(PADDLE_CONFIG_FILE);
+        self.rec_config_path = config.exists().then_some(config);
+        self
+    }
+
+    /// Reads detection preprocessing parameters (channel order and
+    /// normalisation) from a PaddleOCR `inference.yml`.
+    pub fn det_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.det_config_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Reads recognition parameters (channel order, input shape and, when no
+    /// explicit dictionary is configured, the dictionary) from a PaddleOCR
+    /// `inference.yml`.
+    pub fn rec_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.rec_config_path = Some(path.as_ref().to_path_buf());
         self
     }
 
@@ -552,9 +630,31 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Sets the probability threshold used to binarise the DBNet output
+    /// (PaddleOCR `thresh`, default `0.3`).
+    pub fn det_threshold(mut self, threshold: f32) -> Self {
+        self.det_threshold = threshold;
+        self
+    }
+
+    /// Sets the minimum mean probability for a detected region
+    /// (PaddleOCR `box_thresh`, default `0.6`).
+    pub fn det_box_threshold(mut self, threshold: f32) -> Self {
+        self.det_box_threshold = threshold;
+        self
+    }
+
     /// Sets the maximum batch size for recognition.
     pub fn rec_batch_size(mut self, size: usize) -> Self {
         self.rec_batch_size = size;
+        self
+    }
+
+    /// Controls whether `" "` is appended to the dictionary as the last class
+    /// (PaddleOCR `use_space_char`, default `true`). PP-OCRv5 and PP-OCRv6
+    /// recognition models are trained with the space class.
+    pub fn rec_use_space_char(mut self, enabled: bool) -> Self {
+        self.rec_use_space_char = enabled;
         self
     }
 
@@ -566,9 +666,12 @@ impl OcrEngineBuilder {
         let rec_model_path = self.rec_model_path.ok_or(OcrError::MissingField {
             field: "rec_model_path",
         })?;
-        let dictionary_path = self.dictionary_path.ok_or(OcrError::MissingField {
-            field: "dictionary_path",
-        })?;
+        let dictionary_path = self
+            .dictionary_path
+            .or_else(|| self.rec_config_path.clone())
+            .ok_or(OcrError::MissingField {
+                field: "dictionary_path",
+            })?;
 
         if self.rec_batch_size == 0 {
             return Err(OcrError::InvalidConfiguration {
@@ -580,28 +683,49 @@ impl OcrEngineBuilder {
         verify_file_exists(&rec_model_path)?;
         verify_file_exists(&dictionary_path)?;
 
+        let det_model_config = self
+            .det_config_path
+            .as_deref()
+            .map(load_model_config)
+            .transpose()?;
+        let rec_model_config = self
+            .rec_config_path
+            .as_deref()
+            .map(load_model_config)
+            .transpose()?;
+
+        let mut config = OcrEngineConfig::default();
+        config.det_preprocessor.limit_side_len = self.det_limit_side_len;
+        config.det_unclipper.unclip_ratio = self.det_unclip_ratio;
+        config.det_postprocessor.threshold = self.det_threshold;
+        config.det_postprocessor.box_threshold = self.det_box_threshold;
+        config.rec_batch_size = self.rec_batch_size;
+
+        if let Some(det_config) = &det_model_config {
+            apply_det_model_config(&mut config, det_config)?;
+        }
+        if let Some(rec_config) = &rec_model_config {
+            apply_rec_model_config(&mut config, rec_config)?;
+        }
+
         let det_session =
             DetInferenceSession::load(&det_model_path).map_err(|source| OcrError::ModelLoad {
                 source,
                 path: det_model_path.clone(),
             })?;
-        let rec_session =
-            RecInferenceSession::load(&rec_model_path).map_err(|source| OcrError::ModelLoad {
-                source,
-                path: rec_model_path.clone(),
-            })?;
-        let dictionary = RecDictionary::from_path(&dictionary_path)?;
+        let rec_session = RecInferenceSession::load_with_input_height(
+            &rec_model_path,
+            config.rec_preprocessor.target_height,
+        )
+        .map_err(|source| OcrError::ModelLoad {
+            source,
+            path: rec_model_path.clone(),
+        })?;
 
-        let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
-        det_unclipper_config.unclip_ratio = self.det_unclip_ratio;
-
-        let mut det_preprocessor_config = DetPreProcessorConfig::default();
-        det_preprocessor_config.limit_side_len = self.det_limit_side_len;
-
-        let mut config = OcrEngineConfig::default();
-        config.det_preprocessor = det_preprocessor_config;
-        config.det_unclipper = det_unclipper_config;
-        config.rec_batch_size = self.rec_batch_size;
+        let mut dictionary = RecDictionary::from_path(&dictionary_path)?;
+        if self.rec_use_space_char {
+            dictionary = dictionary.with_space_char();
+        }
         config.rec_postprocessor.blank_id = dictionary.blank_id();
 
         Ok(OcrEngine::new(
@@ -614,6 +738,74 @@ impl OcrEngineBuilder {
             config,
         ))
     }
+}
+
+fn load_model_config(path: &Path) -> Result<PaddleInferenceConfig, OcrError> {
+    PaddleInferenceConfig::from_path(path).map_err(|source| OcrError::ModelConfig {
+        source,
+        path: path.to_path_buf(),
+    })
+}
+
+fn apply_det_model_config(
+    config: &mut OcrEngineConfig,
+    model_config: &PaddleInferenceConfig,
+) -> Result<(), OcrError> {
+    if let Some(name) = model_config.post_process_name.as_deref() {
+        if name != "DBPostProcess" {
+            return Err(OcrError::InvalidConfiguration {
+                message: format!(
+                    "detection model config uses unsupported post-process `{}` (expected DBPostProcess)",
+                    name
+                ),
+            });
+        }
+    }
+    if let Some(order) = model_config.color_order {
+        config.det_preprocessor.color_order = order;
+    }
+    if let Some(mean) = model_config.normalize_mean {
+        config.det_preprocessor.mean = mean;
+    }
+    if let Some(std) = model_config.normalize_std {
+        config.det_preprocessor.std = std;
+    }
+    Ok(())
+}
+
+fn apply_rec_model_config(
+    config: &mut OcrEngineConfig,
+    model_config: &PaddleInferenceConfig,
+) -> Result<(), OcrError> {
+    if let Some(name) = model_config.post_process_name.as_deref() {
+        if name != "CTCLabelDecode" {
+            return Err(OcrError::InvalidConfiguration {
+                message: format!(
+                    "recognition model config uses unsupported post-process `{}` (expected CTCLabelDecode)",
+                    name
+                ),
+            });
+        }
+    }
+    if let Some(order) = model_config.color_order {
+        config.rec_preprocessor.color_order = order;
+    }
+    if let Some([channels, height, width]) = model_config.rec_image_shape {
+        if channels != 3 || height == 0 || width == 0 {
+            return Err(OcrError::InvalidConfiguration {
+                message: format!(
+                    "unsupported recognition image shape [{}, {}, {}]",
+                    channels, height, width
+                ),
+            });
+        }
+        config.rec_preprocessor.target_height = height;
+        config.rec_preprocessor.max_width = width;
+        if config.rec_preprocessor.max_dynamic_width < width {
+            config.rec_preprocessor.max_dynamic_width = width;
+        }
+    }
+    Ok(())
 }
 
 fn verify_file_exists(path: &Path) -> Result<(), OcrError> {
@@ -741,40 +933,65 @@ impl RecognitionPipeline {
         }
     }
 
+    /// Recognises `regions` in batches of at most `batch_size`.
+    ///
+    /// Like PaddleOCR, regions are sorted by aspect ratio first so that each
+    /// batch holds crops of similar width, which keeps padding (and thus
+    /// wasted compute) small. Results are returned in the original order.
     fn run_with_timings(
         &self,
         image: &DynamicImage,
         regions: &[RecTextRegion],
+        batch_size: usize,
     ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
-        let preprocess_start = Instant::now();
-        let batch = self
-            .preprocessor
-            .process(image, regions)
-            .map_err(OcrError::from)?;
-        let preprocess_elapsed = preprocess_start.elapsed();
+        let mut timings = StageTimings::zero();
+        let mut order: Vec<usize> = (0..regions.len()).collect();
+        order.sort_by(|&a, &b| aspect_ratio(&regions[a]).total_cmp(&aspect_ratio(&regions[b])));
 
-        let inference_start = Instant::now();
-        let inference = self
-            .session
-            .run(&batch)
-            .map_err(|source| OcrError::RecognitionInference { source })?;
-        let inference_elapsed = inference_start.elapsed();
+        let mut results: Vec<Option<DecodedSequence>> = vec![None; regions.len()];
+        for chunk in order.chunks(batch_size.max(1)) {
+            let batch_regions: Vec<RecTextRegion> =
+                chunk.iter().map(|&index| regions[index]).collect();
 
-        let post_start = Instant::now();
-        let sequences = self
-            .postprocessor
-            .process(&inference)
-            .map_err(OcrError::from)?;
-        let post_elapsed = post_start.elapsed();
+            let preprocess_start = Instant::now();
+            let batch = self
+                .preprocessor
+                .process(image, &batch_regions)
+                .map_err(OcrError::from)?;
+            timings.preprocess += preprocess_start.elapsed();
 
-        let timings = StageTimings {
-            preprocess: preprocess_elapsed,
-            inference: inference_elapsed,
-            postprocess: post_elapsed,
-        };
+            let inference_start = Instant::now();
+            let inference = self
+                .session
+                .run(&batch)
+                .map_err(|source| OcrError::RecognitionInference { source })?;
+            timings.inference += inference_start.elapsed();
 
+            let post_start = Instant::now();
+            let sequences = self
+                .postprocessor
+                .process(&inference)
+                .map_err(OcrError::from)?;
+            timings.postprocess += post_start.elapsed();
+
+            if sequences.len() != chunk.len() {
+                return Err(OcrError::PipelineMismatch {
+                    detection_regions: chunk.len(),
+                    recognition_results: sequences.len(),
+                });
+            }
+            for (&index, sequence) in chunk.iter().zip(sequences) {
+                results[index] = Some(sequence);
+            }
+        }
+
+        let sequences = results.into_iter().flatten().collect();
         Ok((sequences, timings))
     }
+}
+
+fn aspect_ratio(region: &RecTextRegion) -> f64 {
+    region.width as f64 / region.height.max(1) as f64
 }
 
 #[cfg(test)]

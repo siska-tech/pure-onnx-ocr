@@ -1,6 +1,7 @@
 //! # Pure ONNX OCR
 //!
-//! A Pure Rust OCR pipeline that mirrors the PaddleOCR DBNet + SVTR stack.
+//! A Pure Rust OCR pipeline that mirrors the PaddleOCR DBNet + CTC recognition
+//! stack and runs the PP-OCRv5 and PP-OCRv6 ONNX exports.
 //! The crate exposes ergonomic builders and processing stages that let you
 //! load ONNX models, prepare image batches, and decode recognition logits
 //! without any C/C++ dependencies.
@@ -14,6 +15,8 @@ pub mod ctc;
 pub mod detection;
 pub mod dictionary;
 pub mod engine;
+mod onnx_model;
+pub mod paddle_config;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
@@ -27,10 +30,12 @@ pub use dictionary::{DictionaryError, RecDictionary};
 /// High-level façade providing an ergonomic OCR API.
 pub use engine::{
     OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
-    OcrTimings, StageTimings,
+    OcrTimings, StageTimings, PADDLE_CONFIG_FILE, PADDLE_MODEL_FILE,
 };
 /// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
+/// PaddleOCR `inference.yml` reader used for PP-OCRv5 / PP-OCRv6 model directories.
+pub use paddle_config::{ColorOrder, PaddleConfigError, PaddleInferenceConfig};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError, DetScaleRounding,
@@ -39,7 +44,7 @@ pub use postprocessing::{
 pub use preprocessing::{
     DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
     PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig, RecPreProcessorError,
-    RecTextRegion,
+    RecTextRegion, IMAGENET_MEAN, IMAGENET_STD,
 };
 pub use recognition::{
     RecInferenceOutput, RecInferenceSession, RecPostProcessor, RecPostProcessorConfig,
@@ -125,12 +130,13 @@ fn run_dummy_inference(
 
     let start = std::time::Instant::now();
 
-    let mut model = tract_onnx::onnx()
-        .with_ignore_output_shapes(true)
-        .model_for_path(model_path)?;
+    let mut model = onnx_model::load_paddle_onnx(model_path)?;
     println!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
 
-    model.set_input_fact(0, InferenceFact::from(&dummy_input))?;
+    model.set_input_fact(
+        0,
+        InferenceFact::dt_shape(dummy_input.datum_type(), dummy_input.shape()),
+    )?;
     println!("[{}] Input fact set, elapsed: {:?}", label, start.elapsed());
 
     println!(
@@ -246,7 +252,7 @@ mod tests {
             "SVTR tensor dimensions after batch should be positive"
         );
 
-        let view = first.to_array_view::<f32>()?;
+        let view = first.to_plain_array_view::<f32>()?;
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
         for value in view.iter() {

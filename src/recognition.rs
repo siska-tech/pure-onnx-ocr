@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tract_onnx::prelude::*;
-use tract_onnx::tract_core::anyhow::anyhow;
+use tract_onnx::tract_core::internal::anyhow;
 
 /// Result of running SVTR recognition inference.
 #[derive(Debug, Clone)]
@@ -22,33 +22,56 @@ pub struct RecInferenceOutput {
 #[derive(Debug)]
 pub struct RecInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(usize, u32), Arc<TypedRunnableModel<TypedModel>>>>,
+    input_height: u32,
+    cache: RefCell<HashMap<(usize, u32), Arc<TypedRunnableModel>>>,
 }
 
 impl RecInferenceSession {
+    /// Loads a recognition model expecting 48-pixel high inputs (PP-OCRv3 and later).
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
+        Self::load_with_input_height(model_path, 48)
+    }
+
+    /// Loads a recognition model with an explicit input height
+    /// (PaddleOCR `RecResizeImg.image_shape[1]`).
+    pub fn load_with_input_height(
+        model_path: impl AsRef<Path>,
+        input_height: u32,
+    ) -> TractResult<Self> {
         let model_path = model_path.as_ref();
+        if input_height == 0 {
+            return Err(anyhow!("recognition input height must be positive"));
+        }
         println!("[RecInfer] Loading recognition model from {:?}", model_path);
 
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
+        let mut inference_model = crate::onnx_model::load_paddle_onnx(model_path)?;
 
-        let batch = inference_model.symbol_table.sym("batch");
-        let width = inference_model.symbol_table.sym("width");
+        let batch = inference_model.symbols.sym("batch");
+        let width = inference_model.symbols.sym("width");
         inference_model.set_input_fact(
             0,
             InferenceFact::dt_shape(
                 f32::datum_type(),
-                tvec![batch.into(), TDim::from(3), TDim::from(48), width.into()],
+                tvec![
+                    batch.into(),
+                    TDim::from(3),
+                    TDim::from(input_height as i64),
+                    width.into()
+                ],
             ),
         )?;
 
         println!("[RecInfer] Recognition model prepared");
         Ok(Self {
             base_model: inference_model,
+            input_height,
             cache: RefCell::new(HashMap::new()),
         })
+    }
+
+    /// Returns the input height this session was prepared for.
+    pub fn input_height(&self) -> u32 {
+        self.input_height
     }
 
     pub fn run(&self, batch: &PreprocessedRecBatch) -> TractResult<RecInferenceOutput> {
@@ -57,8 +80,7 @@ impl RecInferenceSession {
             return Err(anyhow!(
                 "expected recognition input tensor to have 4 dimensions, got {:?}",
                 tensor_shape
-            )
-            .into());
+            ));
         }
 
         let batch_size = tensor_shape[0];
@@ -71,12 +93,12 @@ impl RecInferenceSession {
             tensor_shape
         );
 
-        if channel != 3 || height != 48 {
+        if channel != 3 || height != self.input_height as usize {
             return Err(anyhow!(
-                "expected recognition input to have shape [*, 3, 48, *], got {:?}",
+                "expected recognition input to have shape [*, 3, {}, *], got {:?}",
+                self.input_height,
                 tensor_shape
-            )
-            .into());
+            ));
         }
 
         let plan = self.runnable_for_dims(batch_size, width as u32)?;
@@ -86,13 +108,12 @@ impl RecInferenceSession {
             .next()
             .ok_or_else(|| anyhow!("SVTR model did not return any outputs"))?;
 
-        let view = output_tensor.to_array_view::<f32>()?;
+        let view = output_tensor.to_plain_array_view::<f32>()?;
         if view.ndim() != 3 {
             return Err(anyhow!(
                 "expected recognition output to have 3 dimensions, got {:?}",
                 view.shape()
-            )
-            .into());
+            ));
         }
 
         let logits = view.into_dimensionality::<ndarray::Ix3>()?.to_owned();
@@ -102,8 +123,7 @@ impl RecInferenceSession {
                 "batch dimension mismatch between input ({}) and output ({})",
                 batch_size,
                 logit_batch
-            )
-            .into());
+            ));
         }
 
         let max_width = batch.max_width as f32;
@@ -141,7 +161,7 @@ impl RecInferenceSession {
         &self,
         batch_size: usize,
         width: u32,
-    ) -> TractResult<Arc<TypedRunnableModel<TypedModel>>> {
+    ) -> TractResult<Arc<TypedRunnableModel>> {
         if let Some(plan) = self.cache.borrow().get(&(batch_size, width)) {
             return Ok(Arc::clone(plan));
         }
@@ -159,7 +179,7 @@ impl RecInferenceSession {
                 tvec![
                     TDim::from(batch_size as i64),
                     TDim::from(3),
-                    TDim::from(48),
+                    TDim::from(self.input_height as i64),
                     TDim::from(width as i64)
                 ],
             ),
@@ -171,7 +191,6 @@ impl RecInferenceSession {
             .into_optimized()?
             .into_runnable()?;
 
-        let plan = Arc::new(plan);
         self.cache
             .borrow_mut()
             .insert((batch_size, width), Arc::clone(&plan));

@@ -1,9 +1,9 @@
 [package]
 name = "pure-onnx-ocr"
 version = "0.1.0"
-rust-version = "1.70"
+rust-version = "1.91"
 edition = "2021"
-description = "Pure Rust OCR pipeline that runs PaddleOCR DBNet + SVTR ONNX models without C/C++ dependencies."
+description = "Pure Rust OCR pipeline that runs PaddleOCR (PP-OCRv5 / PP-OCRv6) DBNet + CTC ONNX models without C/C++ dependencies."
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/siska-tech/pure-onnx-ocr"
@@ -13,8 +13,8 @@ keywords = ["ocr", "onnx", "paddleocr", "text-detection", "text-recognition"]
 categories = ["science::ai-and-machine-learning", "science::computer-vision"]
 
 [dependencies]
-tract-onnx = "0.20"
-ndarray = "0.15"
+tract-onnx = "0.23"
+ndarray = "0.17"
 time = "0.3.44"
 i_overlay = "4.1.1"
 geo-types = "=0.7.12"

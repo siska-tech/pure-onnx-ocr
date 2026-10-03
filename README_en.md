@@ -4,20 +4,21 @@ Author: Shion Watanabe
 Date: 2025-11-09  
 Repository: http://github.com/siska-tech/pure-onnx-ocr
 
-Pure Rust OCR pipeline that re-implements the PaddleOCR (DBNet + SVTR\_HGNet) models without relying on C/C++ runtimes. The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
+Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CTC recognition models without relying on C/C++ runtimes. **PP-OCRv5 and PP-OCRv6 (tiny / small / medium) ONNX exports are supported.** The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
 
 ## Highlights
 
 - **Pure Rust runtime** – no native shared libraries or FFI bindings; `cargo build` is enough.
-- **DBNet + SVTR pipeline** – mirrors the official PaddleOCR ONNX export while staying within the Rust ecosystem.
+- **DBNet + CTC pipeline** – mirrors PaddleOCR 3.x pre- and post-processing: BGR input, ImageNet normalisation, variable-width recognition, `box_thresh` filtering, and the space class.
+- **PaddleOCR 3.x model directories** – point the builder at a directory with `inference.onnx` + `inference.yml` and the preprocessing settings and dictionary are read from `inference.yml`.
 - **Extensible architecture** – detection, recognition, and geometry utilities are separated so you can swap or extend individual stages.
 - **Portable** – designed to run in environments where shipping C++ runtimes is difficult (embedded, serverless, WASM).
 
 ## Prerequisites
 
-- Rust 1.75 or newer (stable channel)
+- Rust 1.91 or newer (stable channel; required by `tract-onnx` 0.23)
 - CPU inference on x86\_64 or aarch64
-- ONNX models (`det.onnx`, `rec.onnx`) and the PaddleOCR dictionary (`ppocrv5_dict.txt`)
+- PaddleOCR ONNX models (PP-OCRv6 recommended; PP-OCRv5 also works)
 
 ## Installation
 
@@ -28,9 +29,51 @@ image = "0.25"       # recommended for image I/O
 geo-types = "0.7"    # recommended for working with polygon results
 ```
 
-Download the `PP-OCRv5_Server-ONNX` (or Mobile) bundle from PaddleOCR. Place the files under `models/ppocrv5/` (or any path of your choice) and pass the paths into the builder.
+### PP-OCRv6 (recommended)
+
+Download `inference.onnx` and `inference.yml` from the Hugging Face repositories `PaddlePaddle/PP-OCRv6_{tiny,small,medium}_{det,rec}_onnx` and keep each pair in its own directory. The dictionary is embedded in the recognition `inference.yml`, so no separate dictionary file is needed.
+
+```bash
+for kind in det rec; do
+  mkdir -p models/ppocrv6/small_${kind}
+  for f in inference.onnx inference.yml; do
+    curl -L -o models/ppocrv6/small_${kind}/${f} \
+      https://huggingface.co/PaddlePaddle/PP-OCRv6_small_${kind}_onnx/resolve/main/${f}
+  done
+done
+```
+
+| Tier | Notes | CPU time per 896x528 image |
+| :--- | :--- | :--- |
+| `tiny` | Smallest. 6,904-character dictionary **without hiragana/katakana, so it cannot read Japanese** | ~2.3 s |
+| `small` | 50 languages including Japanese. Good balance | ~6.5–8 s |
+| `medium` | 50 languages. Most accurate (PaddleOCR 3.x default) | ~21–26 s |
+
+### PP-OCRv5
+
+Individual files (`det.onnx`, `rec.onnx`, `ppocrv5_dict.txt`) still work. Directory-style exports such as `PaddlePaddle/PP-OCRv5_{mobile,server}_{det,rec}_onnx` can be used exactly like PP-OCRv6.
 
 ## Quick Start
+
+With PP-OCRv6 model directories:
+
+```rust
+use pure_onnx_ocr::{OcrEngineBuilder, OcrError};
+
+fn main() -> Result<(), OcrError> {
+    let engine = OcrEngineBuilder::new()
+        .det_model_dir("models/ppocrv6/small_det") // inference.onnx + inference.yml
+        .rec_model_dir("models/ppocrv6/small_rec") // dictionary comes from inference.yml
+        .build()?;
+
+    for result in engine.run_from_path("examples/demo.jpg")? {
+        println!("{} ({:.3})", result.text, result.confidence);
+    }
+    Ok(())
+}
+```
+
+With individual files (PP-OCRv5 text dictionary):
 
 ```rust
 use pure_onnx_ocr::{OcrEngineBuilder, OcrResult};
@@ -78,24 +121,42 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
   --det-limit-side-len 960 \
   --det-unclip-ratio 1.5 \
   --rec-batch-size 8
+
+# PP-OCRv6 model directories
+cargo run --release --bin ocr_smoke -- path/to/image.jpg \
+  --det-model-dir models/ppocrv6/small_det \
+  --rec-model-dir models/ppocrv6/small_rec
+
+# Thresholds (defaults match the PaddleOCR 3.x pipeline: 0.3 / 0.6)
+cargo run --release --bin ocr_smoke -- path/to/image.jpg \
+  --det-model-dir models/ppocrv6/small_det \
+  --rec-model-dir models/ppocrv6/small_rec \
+  --det-thresh 0.3 --det-box-thresh 0.6
 ```
 
 The CLI prints inference timing, recognised texts with confidences, and polygon coordinates. It exits with a descriptive error when the image or models are missing.
 
-Internally, the detection pre-processing stage now zero-pads resized tensors so their height/width are multiples of 32, matching DBNet’s input requirements.
+Detection resizes the long side, normalises in BGR order with ImageNet statistics, and pads to multiples of 32. Recognition keeps the 48 px height and aspect ratio, widens the input up to 3200 px for long lines, and batches crops sorted by aspect ratio.
 
-> **Current limitation:** Although the pipeline loads and runs, the OCR results are still noisy and often incorrect. Root-cause analysis and debugging remain open tasks.
+> **Known limitations:**
+> - Text regions are cropped by their axis-aligned bounding box. Unlike PaddleOCR, there is no perspective correction, so rotated or vertical text is less accurate.
+> - Detection runs on a copy downscaled to a 960 px long side. PaddleOCR 3.x's native-resolution mode is not implemented yet.
+> - PP-OCRv6 medium takes tens of seconds per image on CPU with tract. Prefer tiny or small when speed matters.
+>
+> Research notes and design decisions are in `docs/devlog/ppocrv6/`.
 
 ### Troubleshooting
 
 - `ModelLoad`: `tract` rejected an operator that the ONNX graph requires (e.g., `LayerNormalization`, `Scan`). Try a simplified model or file an issue with model details.
+- `ModelConfig`: an `inference.yml` could not be parsed. Only the block-style YAML that PaddleOCR emits is supported.
 - `Dictionary`: ensure the dictionary file is encoded in UTF-8 without BOM.
 
 ## API Overview
 
 | Symbol             | Description                                                                                                   |
 | ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `OcrEngineBuilder` | Configures model paths and runtime parameters. Produces an `OcrEngine`.                                       |
+| `OcrEngineBuilder` | Configures model paths and runtime parameters. Produces an `OcrEngine`. `det_model_dir` / `rec_model_dir` accept PaddleOCR model directories. |
+| `PaddleInferenceConfig` | Reads preprocessing parameters, thresholds, and the dictionary from a PaddleOCR `inference.yml`.         |
 | `OcrEngine`        | Facade that executes detection + recognition. Provides `run_from_path` and `run_from_image`.                  |
 | `OcrResult`        | Holds the text, confidence score, and `Polygon` bounding box for a single region.                             |
 | `OcrError`         | Enumerates all errors emitted by the library (I/O, model loading, preprocessing, inference, post-processing). |
@@ -149,5 +210,6 @@ Licensed under `Apache-2.0`, aligning with PaddleOCR, OnnxOCR, and tract licensi
 ## Testing
 
 - Unit tests: `cargo test`
+- PP-OCRv6 tests (`tests/ppocrv6.rs`): the tiny pipeline runs by default; small and medium run with `cargo test --release --test ppocrv6 -- --ignored`.
 - Integration tests: provide PP-OCRv5 models and a demo image via the `PURE_ONNX_OCR_FIXTURE_DIR` environment variable or `tests/fixtures/`. See `tests/fixtures/README.md` for the expected directory structure. Tests skip automatically when fixtures are missing.
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::preprocessing::PreprocessedDetInput;
 use ndarray::{Array2, Axis};
 use tract_onnx::prelude::*;
-use tract_onnx::tract_core::anyhow::anyhow;
+use tract_onnx::tract_core::internal::anyhow;
 
 /// Result of running DBNet detection inference.
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct DetInferenceOutput {
 #[derive(Debug)]
 pub struct DetInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(u32, u32), Arc<TypedRunnableModel<TypedModel>>>>,
+    cache: RefCell<HashMap<(u32, u32), Arc<TypedRunnableModel>>>,
 }
 
 impl DetInferenceSession {
@@ -26,12 +26,10 @@ impl DetInferenceSession {
         let model_path = model_path.as_ref();
         println!("[DetInfer] Loading detection model from {:?}", model_path);
 
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
+        let mut inference_model = crate::onnx_model::load_paddle_onnx(model_path)?;
 
-        let height = inference_model.symbol_table.sym("height");
-        let width = inference_model.symbol_table.sym("width");
+        let height = inference_model.symbols.sym("height");
+        let width = inference_model.symbols.sym("width");
         inference_model.set_input_fact(
             0,
             InferenceFact::dt_shape(
@@ -62,7 +60,7 @@ impl DetInferenceSession {
             .next()
             .ok_or_else(|| anyhow!("DBNet model did not return any outputs"))?;
 
-        let view = output_tensor.to_array_view::<f32>()?;
+        let view = output_tensor.to_plain_array_view::<f32>()?;
         let view = view.into_dimensionality::<ndarray::Ix4>()?;
         let probability_map = view
             .index_axis(Axis(0), 0)
@@ -77,11 +75,7 @@ impl DetInferenceSession {
         Ok(DetInferenceOutput { probability_map })
     }
 
-    fn runnable_for_dims(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> TractResult<Arc<TypedRunnableModel<TypedModel>>> {
+    fn runnable_for_dims(&self, width: u32, height: u32) -> TractResult<Arc<TypedRunnableModel>> {
         if let Some(plan) = self.cache.borrow().get(&(width, height)) {
             return Ok(Arc::clone(plan));
         }
@@ -111,7 +105,6 @@ impl DetInferenceSession {
             .into_optimized()?
             .into_runnable()?;
 
-        let plan = Arc::new(plan);
         self.cache
             .borrow_mut()
             .insert((width, height), Arc::clone(&plan));
@@ -173,6 +166,7 @@ mod tests {
         let image = dummy_image(320, 320);
         let preprocessor = DetPreProcessor::new(DetPreProcessorConfig {
             limit_side_len: 320,
+            ..DetPreProcessorConfig::default()
         });
         let preprocessed = preprocessor
             .process(&image)
