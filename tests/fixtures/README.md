@@ -1,5 +1,12 @@
 # Integration Test Fixtures
 
+The quickest way to get everything the default test suite needs (about 35 MB):
+
+```bash
+scripts/fetch_fixtures.sh          # PP-OCRv6 tiny, PP-OCRv5 mobile, classifiers, sample image
+scripts/fetch_fixtures.sh --all    # + small/medium, PP-OCRv5 server, ja.jpg (ignored tests, ocr_bench)
+```
+
 The integration tests expect the following assets to be available either via
 the `PURE_ONNX_OCR_FIXTURE_DIR` environment variable or under this directory:
 

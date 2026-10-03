@@ -309,6 +309,8 @@ Pull Request や Issue を歓迎します。大規模な変更を提案する場
 
 ## テスト
 
-- ユニットテスト: `cargo test`
+- テスト用モデルの取得: `scripts/fetch_fixtures.sh`（既定のテストに必要な約 35MB。`--all` で small/medium なども取得）
+- テスト: `cargo test --release`（推論を含むため release ビルドを推奨）
+- CI: GitHub Actions（`.github/workflows/ci.yml`）で fmt、clippy、Linux と Windows でのテスト、MSRV、WebAssembly ビルドを確認しています。
 - PP-OCRv6 テスト (`tests/ppocrv6.rs`): tiny のパイプラインは既定で実行されます。small と medium は `cargo test --release --test ppocrv6 -- --ignored` で実行します。
 - 結合テスト: PP-OCRv5 モデルとテスト画像を `PURE_ONNX_OCR_FIXTURE_DIR` または `tests/fixtures/` に配置してください。フィクスチャが見つからない場合、テストは自動的にスキップされます。必要なパス構成は `tests/fixtures/README.md` を参照してください。

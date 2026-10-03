@@ -261,7 +261,9 @@ Licensed under `Apache-2.0`, aligning with PaddleOCR, OnnxOCR, and tract licensi
 
 ## Testing
 
-- Unit tests: `cargo test`
+- Fixtures: `scripts/fetch_fixtures.sh` (about 35 MB for the default suite; `--all` adds small/medium and more)
+- Tests: `cargo test --release` (release mode recommended, inference is slow in debug)
+- CI: GitHub Actions (`.github/workflows/ci.yml`) runs fmt, clippy, tests on Linux and Windows, an MSRV check and WebAssembly builds.
 - PP-OCRv6 tests (`tests/ppocrv6.rs`): the tiny pipeline runs by default; small and medium run with `cargo test --release --test ppocrv6 -- --ignored`.
 - Integration tests: provide PP-OCRv5 models and a demo image via the `PURE_ONNX_OCR_FIXTURE_DIR` environment variable or `tests/fixtures/`. See `tests/fixtures/README.md` for the expected directory structure. Tests skip automatically when fixtures are missing.
 
