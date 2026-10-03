@@ -77,6 +77,9 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   processing above.
 
 ### Fixed
+- crates.io metadata: `categories` now uses valid slugs (`computer-vision`,
+  `science`); the previous values were rejected and had to be removed for the
+  0.1.0 upload.
 - PaddleOCR 3.x ONNX exports (PP-OCRv5 and PP-OCRv6) failed to load because
   their symbolic `value_info` shape hints conflicted with concrete inputs.
 - `OcrEngine` is now `Send + Sync`; the documentation claimed it could be
@@ -90,5 +93,5 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/7467e8f...release/0.2.0
-[0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/commit/7467e8f
+[0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/95bcbe1...release/0.2.0
+[0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/commit/95bcbe1

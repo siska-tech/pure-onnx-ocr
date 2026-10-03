@@ -10,7 +10,7 @@ repository = "https://github.com/siska-tech/pure-onnx-ocr"
 homepage = "https://github.com/siska-tech/pure-onnx-ocr"
 documentation = "https://docs.rs/pure_onnx_ocr"
 keywords = ["ocr", "onnx", "paddleocr", "text-detection", "text-recognition"]
-categories = ["science::ai-and-machine-learning", "science::computer-vision"]
+categories = ["computer-vision", "science"]
 exclude = ["bindings/"]
 
 [features]
