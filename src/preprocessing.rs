@@ -1,5 +1,5 @@
 use crate::paddle_config::ColorOrder;
-use image::{imageops, imageops::FilterType, DynamicImage, GenericImageView, RgbImage};
+use image::{DynamicImage, GenericImageView, RgbImage};
 use ndarray::{s, Array4};
 use tract_onnx::prelude::Tensor;
 
@@ -78,6 +78,22 @@ pub struct PreprocessedDetInput {
     pub tensor: Tensor,
     pub resized_dims: (u32, u32),
     pub scale_ratio: f64,
+    /// Per-axis scale `(resized_width / original_width, resized_height /
+    /// original_height)`; differs slightly from `scale_ratio` because each
+    /// side is rounded to a multiple of 32.
+    pub scale_xy: (f64, f64),
+}
+
+impl PreprocessedDetInput {
+    /// Factors that map probability-map coordinates back to the original
+    /// image: `(original_width / resized_width, original_height / resized_height)`.
+    pub fn inverse_scale(&self) -> (f64, f64) {
+        let (sx, sy) = self.scale_xy;
+        (
+            if sx > 0.0 { 1.0 / sx } else { 1.0 },
+            if sy > 0.0 { 1.0 / sy } else { 1.0 },
+        )
+    }
 }
 
 /// DBNet detection preprocessor.
@@ -108,20 +124,10 @@ impl DetPreProcessor {
             self.config.max_side_limit,
         );
 
-        let resized = if resized_w == orig_w && resized_h == orig_h {
-            image.clone()
-        } else {
-            // Bilinear filtering mirrors the `cv2.resize` default used by PaddleOCR.
-            image.resize_exact(resized_w, resized_h, FilterType::Triangle)
-        };
-
-        let rgb_image = resized.to_rgb8();
-        let padded_w = round_up_to_multiple(resized_w, 32);
-        let padded_h = round_up_to_multiple(resized_h, 32);
-
-        // Padding stays at 0.0, i.e. the normalised mean colour, so the padded
-        // border does not introduce artificial edges.
-        let mut array = Array4::<f32>::zeros((1, 3, padded_h as usize, padded_w as usize));
+        // Stretch (not pad) to the multiple-of-32 size with OpenCV-compatible
+        // bilinear interpolation, as PaddleOCR does.
+        let rgb_image = crate::imgproc::resize_bilinear(&image.to_rgb8(), resized_w, resized_h);
+        let mut array = Array4::<f32>::zeros((1, 3, resized_h as usize, resized_w as usize));
         let order = self.config.color_order;
         let mut scale = [0f32; 3];
         let mut offset = [0f32; 3];
@@ -146,12 +152,20 @@ impl DetPreProcessor {
 
         Ok(PreprocessedDetInput {
             tensor,
-            resized_dims: (padded_w, padded_h),
+            resized_dims: (resized_w, resized_h),
             scale_ratio,
+            scale_xy: (
+                resized_w as f64 / orig_w as f64,
+                resized_h as f64 / orig_h as f64,
+            ),
         })
     }
 }
 
+/// PaddleOCR `DetResizeForTest.resize_image_type0`: scale by the limit
+/// rule, cap the longest side, then round each side to the nearest multiple
+/// of 32 (ties to even, at least 32). The image is stretched to that size,
+/// so the horizontal and vertical scales can differ slightly.
 fn compute_resized_dims(
     orig_w: u32,
     orig_h: u32,
@@ -159,32 +173,28 @@ fn compute_resized_dims(
     limit_type: DetLimitType,
     max_side_limit: u32,
 ) -> (u32, u32, f64) {
-    let max_side = orig_w.max(orig_h) as f64;
-    let min_side = orig_w.min(orig_h) as f64;
+    let (w, h) = (orig_w as f64, orig_h as f64);
     let limit = limit_side_len as f64;
-
-    let mut scale_ratio = if limit_side_len == 0 {
+    let ratio = if limit_side_len == 0 {
         1.0
     } else {
         match limit_type {
-            DetLimitType::Max if max_side > limit => limit / max_side,
-            DetLimitType::Min if min_side < limit => limit / min_side,
+            DetLimitType::Max if w.max(h) > limit => limit / w.max(h),
+            DetLimitType::Min if w.min(h) < limit => limit / w.min(h),
             _ => 1.0,
         }
     };
-
-    if max_side_limit > 0 && max_side * scale_ratio > max_side_limit as f64 {
-        scale_ratio = max_side_limit as f64 / max_side;
+    let mut resize_w = (w * ratio).trunc();
+    let mut resize_h = (h * ratio).trunc();
+    let mut ratio = ratio;
+    if max_side_limit > 0 && resize_w.max(resize_h) > max_side_limit as f64 {
+        let cap = max_side_limit as f64 / resize_w.max(resize_h);
+        resize_w = (resize_w * cap).trunc();
+        resize_h = (resize_h * cap).trunc();
+        ratio *= cap;
     }
-
-    if (scale_ratio - 1.0).abs() < f64::EPSILON {
-        return (orig_w, orig_h, 1.0);
-    }
-
-    let resized_w = ((orig_w as f64 * scale_ratio).round().max(1.0)) as u32;
-    let resized_h = ((orig_h as f64 * scale_ratio).round().max(1.0)) as u32;
-
-    (resized_w, resized_h, scale_ratio)
+    let to_32 = |v: f64| ((v / 32.0).round_ties_even() * 32.0).max(32.0) as u32;
+    (to_32(resize_w), to_32(resize_h), ratio)
 }
 
 fn round_up_to_multiple(value: u32, multiple: u32) -> u32 {
@@ -408,8 +418,18 @@ impl RecPreProcessor {
         let desired_widths: Vec<u32> = crops
             .iter()
             .map(|crop| {
+                // PaddleOCR: the canvas is int(h * max_ratio) wide and the crop
+                // ceil(h * ratio), so wide crops end up truncated, narrow ones
+                // rounded up.
                 let aspect_ratio = crop.width() as f64 / crop.height() as f64;
-                (aspect_ratio * target_height as f64).ceil().max(1.0) as u32
+                let scaled = aspect_ratio * target_height as f64;
+                let min_ratio = self.config.max_width as f64 / target_height as f64;
+                let width = if aspect_ratio > min_ratio {
+                    scaled.trunc()
+                } else {
+                    scaled.ceil()
+                };
+                width.max(1.0) as u32
             })
             .collect();
         let max_width = self.batch_width(desired_widths.iter().copied().max().unwrap_or(1));
@@ -436,8 +456,7 @@ impl RecPreProcessor {
         for (index, crop) in crops.iter().enumerate() {
             let target_width = desired_widths[index].clamp(1, width_cap);
             // Bilinear filtering mirrors the `cv2.resize` default used by PaddleOCR.
-            let rgb_image =
-                imageops::resize(crop, target_width, target_height, FilterType::Triangle);
+            let rgb_image = crate::imgproc::resize_bilinear(crop, target_width, target_height);
 
             for (x, y, pixel) in rgb_image.enumerate_pixels() {
                 for channel in 0..3 {
@@ -532,7 +551,8 @@ mod tests {
         });
         let result = preprocessor.process(&image).unwrap();
         assert!((result.scale_ratio - 2.0).abs() < 1e-9);
-        assert_eq!(result.resized_dims, (416, 64));
+        // 400 / 32 = 12.5 rounds half to even (Python round) -> 384.
+        assert_eq!(result.resized_dims, (384, 64));
     }
 
     #[test]
@@ -641,15 +661,20 @@ mod tests {
     }
 
     #[test]
-    fn detection_tensor_dims_are_padded_to_multiple_of_32() {
+    fn detection_dims_round_to_nearest_multiple_of_32() {
+        // PaddleOCR stretches each side to the nearest multiple of 32
+        // (123 -> 128, 77 -> 64) instead of padding.
         let image = solid_image(123, 77, 200);
         let preprocessor = DetPreProcessor::new(DetPreProcessorConfig::default());
 
         let result = preprocessor.process(&image).unwrap();
 
-        assert_eq!(result.resized_dims, (128, 96));
-        assert_eq!(result.tensor.shape(), &[1, 3, 96, 128]);
+        assert_eq!(result.resized_dims, (128, 64));
+        assert_eq!(result.tensor.shape(), &[1, 3, 64, 128]);
         assert!((result.scale_ratio - 1.0).abs() < f64::EPSILON);
+        let (sx, sy) = result.inverse_scale();
+        assert!((sx - 123.0 / 128.0).abs() < 1e-12);
+        assert!((sy - 77.0 / 64.0).abs() < 1e-12);
     }
 
     #[test]

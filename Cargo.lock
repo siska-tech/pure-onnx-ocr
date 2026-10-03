@@ -1238,6 +1238,7 @@ dependencies = [
  "ndarray",
  "once_cell",
  "rayon",
+ "serde_json",
  "time",
  "tract-linalg",
  "tract-onnx",

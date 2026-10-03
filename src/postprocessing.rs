@@ -283,7 +283,7 @@ impl DetPolygonUnclipper {
             .collect()
     }
 
-    fn unclip_polygon(&self, polygon: &Polygon<f64>) -> Vec<Polygon<f64>> {
+    pub(crate) fn unclip_polygon(&self, polygon: &Polygon<f64>) -> Vec<Polygon<f64>> {
         let distance = unclip_distance(polygon, self.config.unclip_ratio.max(0.0));
         if distance <= f64::EPSILON {
             return vec![polygon.clone()];
@@ -579,6 +579,178 @@ fn clamp_to_bounds(value: f64, bound: u32) -> f64 {
 fn round_fractional(value: f64, digits: u32) -> f64 {
     let factor = 10_f64.powi(digits as i32);
     (value * factor).round() / factor
+}
+
+/// A detected text box in PaddleOCR form: the minimum-area rectangle
+/// `[tl, tr, br, bl]` and its mean probability (`box_score_fast`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetBox {
+    pub quad: crate::crop::Quad,
+    pub score: f32,
+}
+
+/// Minimum short side (in probability-map pixels) of a candidate box before
+/// and (plus 2) after unclipping, as in PaddleOCR's `DBPostProcess`.
+const DB_MIN_SIZE: f64 = 3.0;
+
+impl DetPostProcessor {
+    /// Extracts text boxes exactly like PaddleOCR's
+    /// `DBPostProcess.boxes_from_bitmap` (`score_mode = "fast"`):
+    ///
+    /// 1. binarise with `probability > threshold`;
+    /// 2. for every contour take its minimum-area rectangle and drop it when
+    ///    the short side is below 3 px;
+    /// 3. score the rectangle by the mean probability inside it and drop it
+    ///    below `box_threshold`;
+    /// 4. unclip the *rectangle* (distance = area x ratio / perimeter, round
+    ///    joins) and take the minimum-area rectangle of the result, dropping
+    ///    boxes whose short side is below 5 px.
+    ///
+    /// Boxes are returned in probability-map coordinates.
+    pub fn db_boxes(
+        &self,
+        probability_map: &Array2<f32>,
+        unclipper: &DetPolygonUnclipper,
+    ) -> Result<Vec<DetBox>, DetPostProcessorError> {
+        if probability_map.is_empty() {
+            return Err(DetPostProcessorError::EmptyProbabilityMap);
+        }
+        let threshold = self.config.threshold.clamp(0.0, 1.0);
+        let (height, width) = probability_map.dim();
+        let buffer: Vec<u8> = probability_map
+            .iter()
+            .map(|&value| if value > threshold { 255 } else { 0 })
+            .collect();
+        let gray = GrayImage::from_vec(width as u32, height as u32, buffer)
+            .ok_or(DetPostProcessorError::ImageCreationFailed)?;
+
+        // cv2.RETR_LIST: every border, outer and hole alike.
+        let contours = find_contours::<i32>(&gray);
+        let limit = if self.config.max_candidates == 0 {
+            contours.len()
+        } else {
+            contours.len().min(self.config.max_candidates)
+        };
+
+        let mut boxes = Vec::new();
+        for contour in contours.iter().take(limit) {
+            let points: Vec<(f64, f64)> = contour
+                .points
+                .iter()
+                .map(|p| (p.x as f64, p.y as f64))
+                .collect();
+            let Some(quad) = crate::crop::min_area_quad_from_points(&points) else {
+                continue;
+            };
+            if quad_short_side(&quad) < DB_MIN_SIZE {
+                continue;
+            }
+            let score = quad_score(probability_map, &quad);
+            if score < self.config.box_threshold {
+                continue;
+            }
+
+            let polygon = quad_to_polygon(&quad);
+            let Some(expanded) = unclipper
+                .unclip_polygon(&polygon)
+                .into_iter()
+                .max_by(|a, b| polygon_area(a).total_cmp(&polygon_area(b)))
+            else {
+                continue;
+            };
+            let Some(expanded_quad) = crate::crop::min_area_quad(&expanded) else {
+                continue;
+            };
+            if quad_short_side(&expanded_quad) < DB_MIN_SIZE + 2.0 {
+                continue;
+            }
+            boxes.push(DetBox {
+                quad: expanded_quad,
+                score,
+            });
+        }
+        Ok(boxes)
+    }
+}
+
+fn quad_short_side(quad: &crate::crop::Quad) -> f64 {
+    let dist = |a: (f64, f64), b: (f64, f64)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+    dist(quad[0], quad[1]).min(dist(quad[1], quad[2]))
+}
+
+fn quad_to_polygon(quad: &crate::crop::Quad) -> Polygon<f64> {
+    let mut coords: Vec<Coord<f64>> = quad.iter().map(|&(x, y)| Coord { x, y }).collect();
+    coords.push(coords[0]);
+    Polygon::new(LineString::from(coords), vec![])
+}
+
+/// Mean probability inside the quad (PaddleOCR `box_score_fast`: the quad
+/// is rasterised on its integer bounding box, boundary included).
+fn quad_score(probability_map: &Array2<f32>, quad: &crate::crop::Quad) -> f32 {
+    let (height, width) = probability_map.dim();
+    let clamp_x = |v: f64| v.clamp(0.0, (width - 1) as f64);
+    let clamp_y = |v: f64| v.clamp(0.0, (height - 1) as f64);
+    let xmin = clamp_x(
+        quad.iter()
+            .map(|p| p.0)
+            .fold(f64::INFINITY, f64::min)
+            .floor(),
+    ) as usize;
+    let xmax = clamp_x(
+        quad.iter()
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil(),
+    ) as usize;
+    let ymin = clamp_y(
+        quad.iter()
+            .map(|p| p.1)
+            .fold(f64::INFINITY, f64::min)
+            .floor(),
+    ) as usize;
+    let ymax = clamp_y(
+        quad.iter()
+            .map(|p| p.1)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil(),
+    ) as usize;
+    // fillPoly works on integer vertices (the float quad is truncated).
+    let verts: Vec<(f64, f64)> = quad.iter().map(|&(x, y)| (x.trunc(), y.trunc())).collect();
+
+    let inside = |px: f64, py: f64| {
+        let mut sign = 0i8;
+        for i in 0..4 {
+            let (ax, ay) = verts[i];
+            let (bx, by) = verts[(i + 1) % 4];
+            let cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+            if cross.abs() < 1e-9 {
+                continue;
+            }
+            let s = if cross > 0.0 { 1 } else { -1 };
+            if sign == 0 {
+                sign = s;
+            } else if s != sign {
+                return false;
+            }
+        }
+        true
+    };
+
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for y in ymin..=ymax {
+        for x in xmin..=xmax {
+            if inside(x as f64, y as f64) {
+                sum += probability_map[[y, x]] as f64;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f64) as f32
+    }
 }
 
 #[cfg(test)]

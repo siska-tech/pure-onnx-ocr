@@ -5,8 +5,8 @@ use crate::dictionary::{DictionaryError, RecDictionary};
 use crate::orientation::{rotate_ccw, unrotate_point, OrientationClassifier, OrientationError};
 use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::postprocessing::{
-    DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
-    DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
+    DetPolygonUnclipper, DetPolygonUnclipperConfig, DetPostProcessor, DetPostProcessorConfig,
+    DetPostProcessorError,
 };
 use crate::preprocessing::{
     DetLimitType, DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
@@ -273,7 +273,6 @@ pub struct OcrEngineConfig {
     pub det_preprocessor: DetPreProcessorConfig,
     pub det_postprocessor: DetPostProcessorConfig,
     pub det_unclipper: DetPolygonUnclipperConfig,
-    pub det_polygon_scaler: DetPolygonScalerConfig,
     pub rec_preprocessor: RecPreProcessorConfig,
     pub rec_postprocessor: RecPostProcessorConfig,
     pub rec_batch_size: usize,
@@ -289,7 +288,6 @@ impl Default for OcrEngineConfig {
             det_preprocessor: DetPreProcessorConfig::default(),
             det_postprocessor: DetPostProcessorConfig::default(),
             det_unclipper: DetPolygonUnclipperConfig::default(),
-            det_polygon_scaler: DetPolygonScalerConfig::default(),
             rec_preprocessor: RecPreProcessorConfig::default(),
             rec_postprocessor: RecPostProcessorConfig::default(),
             rec_batch_size: 1,
@@ -323,6 +321,9 @@ pub struct OcrEngine {
 pub struct OcrResult {
     pub text: String,
     pub confidence: f32,
+    /// Detected text box in input-image pixels: the minimum-area rectangle
+    /// (`tl, tr, br, bl`, closed ring), computed like PaddleOCR's
+    /// `DBPostProcess` and rounded to whole pixels.
     pub bounding_box: Polygon<f64>,
 }
 
@@ -423,7 +424,6 @@ impl OcrEngine {
             config.det_preprocessor,
             config.det_postprocessor,
             config.det_unclipper,
-            config.det_polygon_scaler,
         );
 
         let recognition = RecognitionPipeline::new(
@@ -1359,7 +1359,6 @@ struct DetectionPipeline {
     session: Arc<DetInferenceSession>,
     postprocessor: DetPostProcessor,
     unclipper: DetPolygonUnclipper,
-    scaler: DetPolygonScaler,
 }
 
 impl DetectionPipeline {
@@ -1368,14 +1367,12 @@ impl DetectionPipeline {
         preprocessor: DetPreProcessorConfig,
         postprocessor: DetPostProcessorConfig,
         unclipper: DetPolygonUnclipperConfig,
-        scaler: DetPolygonScalerConfig,
     ) -> Self {
         Self {
             preprocessor: DetPreProcessor::new(preprocessor),
             session,
             postprocessor: DetPostProcessor::new(postprocessor),
             unclipper: DetPolygonUnclipper::new(unclipper),
-            scaler: DetPolygonScaler::new(scaler),
         }
     }
 
@@ -1396,14 +1393,29 @@ impl DetectionPipeline {
         let inference_elapsed = inference_start.elapsed();
 
         let post_start = Instant::now();
-        let contours = self
+        let boxes = self
             .postprocessor
-            .process(&inference)
+            .db_boxes(&inference.probability_map, &self.unclipper)
             .map_err(OcrError::from)?;
-        let unclipped = self.unclipper.unclip_contours(&contours);
-        let scaled = self
-            .scaler
-            .scale_polygons(&unclipped, preprocessed.scale_ratio, image_dims);
+        // Map from probability-map pixels back to the input image like
+        // PaddleOCR: per-axis scale, rounded and clamped to the image.
+        let (scale_x, scale_y) = preprocessed.inverse_scale();
+        let (width, height) = (image_dims.0 as f64, image_dims.1 as f64);
+        let scaled: Vec<Polygon<f64>> = boxes
+            .into_iter()
+            .map(|det_box| {
+                let mut coords: Vec<geo_types::Coord<f64>> = det_box
+                    .quad
+                    .iter()
+                    .map(|&(x, y)| geo_types::Coord {
+                        x: (x * scale_x).round().clamp(0.0, width),
+                        y: (y * scale_y).round().clamp(0.0, height),
+                    })
+                    .collect();
+                coords.push(coords[0]);
+                Polygon::new(geo_types::LineString::from(coords), vec![])
+            })
+            .collect();
         let post_elapsed = post_start.elapsed();
 
         let timings = StageTimings {

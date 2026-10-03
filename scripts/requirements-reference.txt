@@ -1,0 +1,6 @@
+# Python environment for scripts/paddleocr_reference.py (PaddleOCR parity references).
+# Versions used to generate tests/reference/*.json.
+paddleocr==3.7.0
+paddlex==3.7.2
+paddlepaddle==3.3.1
+onnxruntime==1.30.0

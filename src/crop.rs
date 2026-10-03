@@ -64,8 +64,9 @@ pub fn min_area_quad_from_points(points: &[(f64, f64)]) -> Option<Quad> {
 /// degenerate.
 pub fn crop_quad(image: &RgbImage, quad: &Quad) -> Option<RgbImage> {
     let [tl, tr, br, bl] = *quad;
-    let width = distance(tl, tr).max(distance(bl, br)).round().max(1.0) as u32;
-    let height = distance(tl, bl).max(distance(tr, br)).round().max(1.0) as u32;
+    // PaddleOCR truncates the crop size (`int(max(norm(...)))`).
+    let width = distance(tl, tr).max(distance(bl, br)).trunc().max(1.0) as u32;
+    let height = distance(tl, bl).max(distance(tr, br)).trunc().max(1.0) as u32;
 
     let from = [tl, tr, br, bl].map(|(x, y)| (x as f32, y as f32));
     let to = [
@@ -80,7 +81,8 @@ pub fn crop_quad(image: &RgbImage, quad: &Quad) -> Option<RgbImage> {
     warp_into(
         image,
         &projection,
-        Interpolation::Bilinear,
+        // cv2.warpPerspective(..., flags=cv2.INTER_CUBIC) in PaddleOCR.
+        Interpolation::Bicubic,
         Rgb([0, 0, 0]),
         &mut out,
     );

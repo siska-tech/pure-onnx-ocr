@@ -16,6 +16,7 @@ pub mod ctc;
 pub mod detection;
 pub mod dictionary;
 pub mod engine;
+pub mod imgproc;
 mod onnx_model;
 pub mod orientation;
 pub mod paddle_config;

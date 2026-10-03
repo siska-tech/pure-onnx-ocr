@@ -29,3 +29,7 @@ sample*.jpg
 bindings/wasm/pkg/
 examples/web/pkg/
 examples/web/models/
+
+# Python environment for scripts/paddleocr_reference.py (uv)
+.venv/
+__pycache__/

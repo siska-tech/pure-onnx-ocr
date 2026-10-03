@@ -31,6 +31,7 @@ PaddleOCR PP-OCRv6（2026-06 公開）の ONNX モデル（tiny / small / medium
 | `[x]` | `smoke/task-fix-001` | OCR 結果の乱れの調査をクローズする | [task-fix-001](../smoke/task-fix-001-ocr-smoke-quality.md) に再評価結果を記録 |
 | `[x]` | [`benchmark-v5-vs-v6`](benchmark-v5-vs-v6.md) | PP-OCRv5 と v6 の速度・精度の比較（tract / CPU） | v6 medium は v5 server より約 2.4 倍速い。v6 small は v5 mobile とほぼ同じ速さで精度が高い |
 | `[x]` | [`perf/task-perf-001`](../perf/task-perf-001-multithread.md) | 推論のマルチスレッド化 | パイプライン全体で 2.9〜4.7 倍速くなった |
+| `[x]` | [`task-v6-010`](task-v6-010-paddle-parity.md) | PaddleOCR 本体（Python）と出力を突き合わせ、DB 後処理・検出リサイズ・認識前処理を本家と同じにする | v6 medium は本家と完全一致。他も検出 F1 0.95 以上 |
 
 ## 🔭 Follow-ups（未着手）
 
