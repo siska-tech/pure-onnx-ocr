@@ -138,10 +138,24 @@ The CLI prints inference timing, recognised texts with confidences, and polygon 
 
 Detection resizes the long side, normalises in BGR order with ImageNet statistics, and pads to multiples of 32. Recognition keeps the 48 px height and aspect ratio, widens the input up to 3200 px for long lines, and batches crops sorted by aspect ratio.
 
+### PaddleOCR 3.x options
+
+| Feature | Builder | `ocr_smoke` | Default |
+| :--- | :--- | :--- | :--- |
+| Rotation-corrected crops (vertical regions rotated by 90 degrees) | `rec_crop_mode(RecCropMode::Rotated)` | `--crop-mode rotated\|axis` | on |
+| Native-resolution detection (as PaddleOCR 3.x) | `det_limit_type(DetLimitType::Min).det_limit_side_len(64)` | `--det-limit-type min --det-limit-side-len 64` | downscale to 960 px long side |
+| Detection thresholds from `inference.yml` | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | pipeline defaults (0.3 / 0.6 / 1.5) |
+| Page orientation correction (0/90/180/270) | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | off |
+| Text-line flip correction (0/180) | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | off |
+| Compiled plan cache limit | `plan_cache_capacity(4, 16)` | n/a | 4 detection / 16 recognition |
+| Loading and inference logs | emitted through the `log` crate | `-v` / `--verbose` | warnings only |
+
+The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` and `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx`. An `x1_0` text-line classifier also exists, but `x0_25` is about 3x faster on tract and is recommended.
+
 > **Known limitations:**
-> - Text regions are cropped by their axis-aligned bounding box. Unlike PaddleOCR, there is no perspective correction, so rotated or vertical text is less accurate.
-> - Detection runs on a copy downscaled to a 960 px long side. PaddleOCR 3.x's native-resolution mode is not implemented yet.
-> - PP-OCRv6 medium takes tens of seconds per image on CPU with tract. Prefer tiny or small when speed matters.
+> - PP-OCRv6 medium takes around 20 s per image on CPU with tract. Prefer tiny or small when speed matters. Timings vary noticeably with machine load.
+> - Text-line flip correction can miss short all-uppercase lines such as `TAIYUAN`.
+> - Document unwarping (UVDoc) and layout analysis are not supported.
 >
 > Research notes and design decisions are in `docs/devlog/ppocrv6/`.
 

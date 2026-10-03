@@ -10,6 +10,8 @@ PaddleOCR PP-OCRv6（2026-06 公開）の ONNX モデル（tiny / small / medium
 
 ブランチ: `feature/ppocrv6-support`
 
+### P1: PP-OCRv6 対応
+
 | ステータス | タスクID | 概要 | 備考 |
 | :--- | :--- | :--- | :--- |
 | `[x]` | [`task-v6-001`](task-v6-001-tract-upgrade.md) | tract 0.23 への移行と、value_info のシンボリック次元の破棄 | MSRV を 1.91 に変更。medium_rec を動かすために必須 |
@@ -18,14 +20,20 @@ PaddleOCR PP-OCRv6（2026-06 公開）の ONNX モデル（tiny / small / medium
 | `[x]` | [`task-v6-004`](task-v6-004-builder-cli.md) | モデルディレクトリ指定 API・縦横比ソートのバッチ化・CLI | `det_model_dir` / `rec_model_dir`、`--det-model-dir` など |
 | `[x]` | [`task-v6-005`](task-v6-005-validation.md) | テスト・実測・ドキュメント | v5 と v6 の 3 階層を 2 枚の画像で比較 |
 
-## 🔭 Follow-ups
+### P2: P1 の残課題
+
+| ステータス | タスクID | 概要 | 備考 |
+| :--- | :--- | :--- | :--- |
+| `[x]` | [`task-v6-006`](task-v6-006-runtime-plan-cache-logging.md) | 推論計画のキャッシュに上限を設ける。`println!` を `log` クレートへ移す | シンボリック形状の計画は 1.4〜2.6 倍遅いため不採用 |
+| `[x]` | [`task-v6-007`](task-v6-007-det-resize-and-thresholds.md) | 検出の原寸モード（`DetLimitType::Min`）と、YAML のしきい値を適用するオプション | 既定は従来どおり長辺 960 |
+| `[x]` | [`task-v6-008`](task-v6-008-rotated-crop.md) | 検出領域を回転補正して切り出す。縦長の領域は 90° 回転する | 10° 傾けた画像で、一致した行が 21 から 24 に増加 |
+| `[x]` | [`task-v6-009`](task-v6-009-orientation-classifiers.md) | ページの向き（0/90/180/270）と行の向き（0/180）の分類器 | 行の向きの分類器は x0_25 を推奨 |
+| `[x]` | `smoke/task-fix-001` | OCR 結果の乱れの調査をクローズする | [task-fix-001](../smoke/task-fix-001-ocr-smoke-quality.md) に再評価結果を記録 |
+
+## 🔭 Follow-ups（未着手）
 
 | 優先度 | 概要 | 背景 |
 | :--- | :--- | :--- |
-| 高 | 検出領域を回転補正して切り出す（PaddleOCR の `get_rotate_crop_image` 相当）。縦長の領域は 90° 回転する | 現状は外接矩形で切り出しているので、傾いた行や縦書きに弱い |
-| 高 | `smoke/task-fix-001`（OCR 結果の乱れの調査）を、本ブランチの成果で再評価して閉じる | 乱れの主因（検出の正規化漏れ、space クラスの欠落、認識幅の固定）は本ブランチで解消済み |
-| 中 | 検出の原寸モード（PaddleOCR 3.x の `limit_type=min, limit_side_len=64, max_side_limit=4000`）を選べるようにする | PaddleOCR と同じ条件で比較するため。速度とのトレードオフがある |
-| 中 | 認識の推論計画をシンボリックな幅で 1 回だけ最適化し、入力形状ごとの再コンパイル（1 回あたり 100〜400 ms）をなくす | 可変幅にしたことで、コンパイルされる形状の種類が増えた |
-| 中 | `inference.yml` の `PostProcess`（thresh / box_thresh / unclip_ratio）を明示的に適用するオプションを追加する | 現在は PaddleOCR パイプラインの既定値（0.3 / 0.6 / 1.5）を使っている |
-| 低 | `DetInferenceSession` / `RecInferenceSession` の `println!` ログを `log` クレートなどへ移す | ライブラリが標準出力に書き込むのは利用者にとって扱いにくい |
-| 低 | PP-OCRv6 の検出・認識以外のモデル（文字行の向き分類、レイアウト解析）に対応する | 本タスクの対象外 |
+| 低 | 文書の歪み補正（UVDoc）とレイアウト解析（PP-DocLayout など） | OCR パイプラインの外側にある文書解析の機能。出力形式（領域、表、読み順）を含めた API 設計が必要なので、別プロジェクトとして判断する |
+| 低 | 短い大文字だけの行で、上下の判定を取りこぼす問題 | PP-LCNet の 0/180 分類の限界。認識結果の信頼度を使った再判定などが考えられる |
+| 低 | `OcrResult` で、回転補正に使った四角形（`Quad`）を返す | 現在は検出ポリゴンだけを返している。公開構造体へのフィールド追加になる |

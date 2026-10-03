@@ -178,7 +178,7 @@ YAML の `PostProcess` にある値（thresh 0.2、box_thresh 0.4、unclip 1.4�
 
 ### 3.4 検出のリサイズ方針
 
-PaddleOCR 3.x は実質的に原寸で検出する（`limit_type=min`）。tract の CPU 推論では大きな画像ほど時間がかかるため、今回は従来の「長辺 960」を維持した。原寸モードの追加は後続タスクとする。
+PaddleOCR 3.x は実質的に原寸で検出する（`limit_type=min`）。tract の CPU 推論では大きな画像ほど時間がかかるため、今回は従来の「長辺 960」を維持した。原寸モードは後続の [task-v6-007](task-v6-007-det-resize-and-thresholds.md) で、オプション（`DetLimitType::Min`）として追加した。
 
 ### 3.5 互換性への影響（破壊的変更）
 

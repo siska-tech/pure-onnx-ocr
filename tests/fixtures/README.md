@@ -18,6 +18,9 @@ fixtures/
       small_rec/  inference.onnx  inference.yml
       medium_det/ inference.onnx  inference.yml
       medium_rec/ inference.onnx  inference.yml
+    PP-LCNet_x1_0_doc_ori/        inference.onnx  inference.yml   # optional
+    PP-LCNet_x1_0_textline_ori/   inference.onnx  inference.yml   # optional
+    PP-LCNet_x0_25_textline_ori/  inference.onnx  inference.yml   # optional
   images/
     demo.png
     general_ocr_002.jpg
@@ -40,6 +43,13 @@ for tier in tiny small medium; do
       curl -L -o models/ppocrv6/${tier}_${kind}/${f} \
         https://huggingface.co/PaddlePaddle/PP-OCRv6_${tier}_${kind}_onnx/resolve/main/${f}
     done
+  done
+done
+for model in PP-LCNet_x1_0_doc_ori PP-LCNet_x1_0_textline_ori PP-LCNet_x0_25_textline_ori; do
+  mkdir -p models/${model}
+  for f in inference.onnx inference.yml; do
+    curl -L -o models/${model}/${f} \
+      https://huggingface.co/PaddlePaddle/${model}_onnx/resolve/main/${f}
   done
 done
 mkdir -p images

@@ -172,10 +172,24 @@ cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
 
 認識前処理では、高さ 48px のまま縦横比を保ってリサイズします。行が長い場合は入力幅を最大 3200px まで広げ、縦横比でソートしたうえでバッチ化します。
 
+### PaddleOCR 3.x 相当のオプション
+
+| 機能 | ビルダー | `ocr_smoke` | 既定 |
+| :--- | :--- | :--- | :--- |
+| 回転補正つきの切り出し（縦長の領域は 90° 回転） | `rec_crop_mode(RecCropMode::Rotated)` | `--crop-mode rotated\|axis` | 有効 |
+| 原寸での検出（PaddleOCR 3.x と同じ条件） | `det_limit_type(DetLimitType::Min).det_limit_side_len(64)` | `--det-limit-type min --det-limit-side-len 64` | 長辺 960 に縮小 |
+| 検出 YAML のしきい値を使う | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | パイプラインの既定値 (0.3 / 0.6 / 1.5) |
+| ページの向き補正（0/90/180/270） | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | 無効 |
+| 行の上下補正（0/180） | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | 無効 |
+| 推論計画のキャッシュ上限 | `plan_cache_capacity(4, 16)` | なし | 検出 4 / 認識 16 |
+| 読み込み・推論ログ | `log` クレートで出力 | `-v` / `--verbose` | Warn 以上のみ |
+
+向きの分類器は、Hugging Face の `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` と `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx` から取得します。行の向きの分類器は `x1_0` 版もありますが、tract 上では `x0_25` 版のほうが約 3 倍速いため、こちらを推奨します。
+
 > **既知の制約:**
-> - 検出領域は外接矩形で切り出しています。PaddleOCR のような回転補正（透視変換）は行っていないため、傾いた行や縦書きは精度が落ちます。
-> - 検出は長辺 960px に縮小して実行します。PaddleOCR 3.x のように原寸で実行するモードはまだありません。
-> - PP-OCRv6 medium は CPU (tract) 上で 1 枚あたり数十秒かかります。速度を優先する場合は tiny / small を推奨します。
+> - PP-OCRv6 medium は CPU (tract) 上で 1 枚あたり 20 秒前後かかります。速度を優先する場合は tiny / small を推奨します。処理時間はマシンの負荷によって大きく変動します。
+> - 行の上下補正は、短い大文字だけの行（`TAIYUAN` など）で判定を誤ることがあります。
+> - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。
 >
 > 調査の経緯と検討内容は `docs/devlog/ppocrv6/` を参照してください。
 
