@@ -1243,6 +1243,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pure-onnx-ocr-wasm"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "pure-onnx-ocr",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"

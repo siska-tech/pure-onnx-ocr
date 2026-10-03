@@ -1,0 +1,6 @@
+# WebAssembly SIMD (simd128) roughly halves PP-OCRv6 inference time in
+# browsers and Node.js. It is supported by every current major browser
+# (Chrome/Edge 91+, Firefox 89+, Safari 16.4+). Remove this to target
+# older engines.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

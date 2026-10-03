@@ -25,3 +25,7 @@ tests/fixtures/models/ppocrv5
 date
 temp/
 sample*.jpg
+# wasm-bindgen output
+bindings/wasm/pkg/
+examples/web/pkg/
+examples/web/models/
