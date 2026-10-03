@@ -24,3 +24,11 @@ imageproc = "0.25.0"
 
 [dev-dependencies]
 once_cell = "1.21"
+
+# Browser WebAssembly (`wasm32-unknown-unknown`):
+# - tract-onnx-opl pulls in getrandom 0.4, which needs its JS backend there.
+# - std::time::Instant panics there; web-time provides a performance.now()
+#   based drop-in replacement.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+web-time = "1"

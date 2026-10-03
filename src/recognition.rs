@@ -105,7 +105,7 @@ impl RecInferenceSession {
         }
 
         let plan = self.runnable_for_dims(batch_size, width as u32)?;
-        let run_start = std::time::Instant::now();
+        let run_start = crate::time::Instant::now();
         let outputs = plan.run(tvec!(batch.tensor.clone().into()))?;
         log::debug!(
             "[RecInfer] Ran batch {:?} in {:?}",
@@ -206,7 +206,7 @@ impl RecInferenceSession {
             ),
         )?;
 
-        let compile_start = std::time::Instant::now();
+        let compile_start = crate::time::Instant::now();
         let plan = model
             .into_typed()?
             .into_decluttered()?

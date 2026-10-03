@@ -15,6 +15,7 @@ use crate::preprocessing::{
 use crate::recognition::{
     RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
 };
+use crate::time::Instant;
 use geo_types::Polygon;
 use image::{imageops, DynamicImage, GenericImageView, ImageError, RgbImage};
 use std::error::Error;
@@ -22,7 +23,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tract_onnx::prelude::TractError;
 
 /// Errors that can occur while building or using the OCR engine.

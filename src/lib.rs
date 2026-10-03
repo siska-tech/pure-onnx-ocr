@@ -22,6 +22,7 @@ pub mod paddle_config;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
+mod time;
 
 /// Re-export of the CTC decoding utilities so applications can customise
 /// post-processing while keeping consistent types.
@@ -132,7 +133,7 @@ fn run_dummy_inference(
     let model_path = model_path.as_ref();
     log::debug!("[{}] Loading model from {:?}", label, model_path);
 
-    let start = std::time::Instant::now();
+    let start = crate::time::Instant::now();
 
     let mut model = onnx_model::load_paddle_onnx(model_path)?;
     log::debug!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
