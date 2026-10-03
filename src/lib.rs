@@ -11,6 +11,7 @@
 //! [`OcrEngine::run_from_image`].  Lower-level modules remain available
 //! when you need to plug specific stages into an existing pipeline.
 
+pub mod crop;
 pub mod ctc;
 pub mod detection;
 pub mod dictionary;
@@ -23,6 +24,7 @@ pub mod recognition;
 
 /// Re-export of the CTC decoding utilities so applications can customise
 /// post-processing while keeping consistent types.
+pub use crop::{crop_quad, min_area_quad, Quad, RecCropMode};
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
 /// Re-export of detection inference helpers for direct DBNet integration.
 pub use detection::{DetInferenceOutput, DetInferenceSession};

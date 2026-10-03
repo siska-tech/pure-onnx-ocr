@@ -1,3 +1,4 @@
+use crate::crop::{crop_quad, min_area_quad, RecCropMode};
 use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
@@ -14,7 +15,7 @@ use crate::recognition::{
     RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
 };
 use geo_types::Polygon;
-use image::{DynamicImage, GenericImageView, ImageError};
+use image::{imageops, DynamicImage, GenericImageView, ImageError, RgbImage};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -139,16 +140,6 @@ impl From<RecPostProcessorError> for OcrError {
     }
 }
 
-fn polygons_to_text_regions(
-    polygons: &[Polygon<f64>],
-    image_dims: (u32, u32),
-) -> Vec<RecTextRegion> {
-    polygons
-        .iter()
-        .map(|polygon| polygon_to_text_region(polygon, image_dims))
-        .collect()
-}
-
 fn polygon_to_text_region(polygon: &Polygon<f64>, image_dims: (u32, u32)) -> RecTextRegion {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
@@ -269,6 +260,8 @@ pub struct OcrEngineConfig {
     pub rec_preprocessor: RecPreProcessorConfig,
     pub rec_postprocessor: RecPostProcessorConfig,
     pub rec_batch_size: usize,
+    /// How text regions are cut out before recognition.
+    pub rec_crop_mode: RecCropMode,
 }
 
 impl Default for OcrEngineConfig {
@@ -281,6 +274,7 @@ impl Default for OcrEngineConfig {
             rec_preprocessor: RecPreProcessorConfig::default(),
             rec_postprocessor: RecPostProcessorConfig::default(),
             rec_batch_size: 8,
+            rec_crop_mode: RecCropMode::default(),
         }
     }
 }
@@ -353,6 +347,31 @@ pub struct OcrRunWithMetrics {
 }
 
 impl OcrEngine {
+    /// Cuts every detected polygon out of `image` according to
+    /// [`OcrEngineConfig::rec_crop_mode`].
+    fn crop_regions(
+        &self,
+        image: &DynamicImage,
+        polygons: &[Polygon<f64>],
+        image_dims: (u32, u32),
+    ) -> Vec<RgbImage> {
+        let rgb = image.to_rgb8();
+        polygons
+            .iter()
+            .map(|polygon| {
+                if self.config.rec_crop_mode == RecCropMode::Rotated {
+                    if let Some(crop) =
+                        min_area_quad(polygon).and_then(|quad| crop_quad(&rgb, &quad))
+                    {
+                        return crop;
+                    }
+                }
+                let region = polygon_to_text_region(polygon, image_dims);
+                imageops::crop_imm(&rgb, region.x, region.y, region.width, region.height).to_image()
+            })
+            .collect()
+    }
+
     fn new(
         det_model_path: PathBuf,
         rec_model_path: PathBuf,
@@ -474,10 +493,13 @@ impl OcrEngine {
             });
         }
 
-        let regions = polygons_to_text_regions(&polygons, image_dims);
-        let (sequences, recognition_timings) =
-            self.recognition
-                .run_with_timings(image, &regions, self.config.rec_batch_size)?;
+        let crop_start = Instant::now();
+        let crops = self.crop_regions(image, &polygons, image_dims);
+        let crop_elapsed = crop_start.elapsed();
+        let (sequences, mut recognition_timings) = self
+            .recognition
+            .run_with_timings(&crops, self.config.rec_batch_size)?;
+        recognition_timings.preprocess += crop_elapsed;
         timings.recognition = recognition_timings;
 
         if sequences.len() != polygons.len() {
@@ -535,6 +557,7 @@ pub struct OcrEngineBuilder {
     det_postprocess_from_model_config: bool,
     rec_batch_size: usize,
     rec_use_space_char: bool,
+    rec_crop_mode: RecCropMode,
     det_plan_cache_capacity: usize,
     rec_plan_cache_capacity: usize,
 }
@@ -557,6 +580,7 @@ impl Default for OcrEngineBuilder {
             det_postprocess_from_model_config: false,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
             rec_use_space_char: true,
+            rec_crop_mode: RecCropMode::default(),
             det_plan_cache_capacity: crate::detection::DEFAULT_DET_PLAN_CACHE,
             rec_plan_cache_capacity: crate::recognition::DEFAULT_REC_PLAN_CACHE,
         }
@@ -703,6 +727,15 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Selects how detected regions are cut out for recognition. The default
+    /// [`RecCropMode::Rotated`] straightens tilted text and rotates vertical
+    /// text like PaddleOCR; [`RecCropMode::AxisAligned`] uses plain bounding
+    /// boxes.
+    pub fn rec_crop_mode(mut self, mode: RecCropMode) -> Self {
+        self.rec_crop_mode = mode;
+        self
+    }
+
     /// Limits how many compiled inference plans are cached per model.
     ///
     /// `tract` compiles one plan per input shape (detection: image size,
@@ -756,6 +789,7 @@ impl OcrEngineBuilder {
         config.det_preprocessor.limit_type = self.det_limit_type;
         config.det_preprocessor.max_side_limit = self.det_max_side_limit;
         config.rec_batch_size = self.rec_batch_size;
+        config.rec_crop_mode = self.rec_crop_mode;
 
         if let Some(det_config) = &det_model_config {
             apply_det_model_config(&mut config, det_config)?;
@@ -1029,23 +1063,22 @@ impl RecognitionPipeline {
     /// wasted compute) small. Results are returned in the original order.
     fn run_with_timings(
         &self,
-        image: &DynamicImage,
-        regions: &[RecTextRegion],
+        crops: &[RgbImage],
         batch_size: usize,
     ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
         let mut timings = StageTimings::zero();
-        let mut order: Vec<usize> = (0..regions.len()).collect();
-        order.sort_by(|&a, &b| aspect_ratio(&regions[a]).total_cmp(&aspect_ratio(&regions[b])));
+        let mut order: Vec<usize> = (0..crops.len()).collect();
+        order.sort_by(|&a, &b| aspect_ratio(&crops[a]).total_cmp(&aspect_ratio(&crops[b])));
 
-        let mut results: Vec<Option<DecodedSequence>> = vec![None; regions.len()];
+        let mut results: Vec<Option<DecodedSequence>> = vec![None; crops.len()];
         for chunk in order.chunks(batch_size.max(1)) {
-            let batch_regions: Vec<RecTextRegion> =
-                chunk.iter().map(|&index| regions[index]).collect();
+            let batch_crops: Vec<RgbImage> =
+                chunk.iter().map(|&index| crops[index].clone()).collect();
 
             let preprocess_start = Instant::now();
             let batch = self
                 .preprocessor
-                .process(image, &batch_regions)
+                .process_images(&batch_crops)
                 .map_err(OcrError::from)?;
             timings.preprocess += preprocess_start.elapsed();
 
@@ -1079,8 +1112,8 @@ impl RecognitionPipeline {
     }
 }
 
-fn aspect_ratio(region: &RecTextRegion) -> f64 {
-    region.width as f64 / region.height.max(1) as f64
+fn aspect_ratio(crop: &RgbImage) -> f64 {
+    crop.width() as f64 / crop.height().max(1) as f64
 }
 
 #[cfg(test)]

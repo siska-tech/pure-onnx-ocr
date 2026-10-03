@@ -1,5 +1,5 @@
 use crate::paddle_config::ColorOrder;
-use image::{imageops::FilterType, DynamicImage, GenericImageView};
+use image::{imageops, imageops::FilterType, DynamicImage, GenericImageView, RgbImage};
 use ndarray::{s, Array4};
 use tract_onnx::prelude::Tensor;
 
@@ -374,16 +374,46 @@ impl RecPreProcessor {
             }
         }
 
-        let target_height = self.config.target_height;
-        let desired_widths: Vec<u32> = regions
+        let crops: Vec<RgbImage> = regions
             .iter()
             .map(|region| {
-                let aspect_ratio = region.width as f64 / region.height as f64;
+                image
+                    .crop_imm(region.x, region.y, region.width, region.height)
+                    .to_rgb8()
+            })
+            .collect();
+        self.process_images(&crops)
+    }
+
+    /// Builds a recognition batch from already cropped text images (for
+    /// example the perspective-corrected crops produced by
+    /// [`crate::crop::crop_quad`]).
+    pub fn process_images(
+        &self,
+        crops: &[RgbImage],
+    ) -> Result<PreprocessedRecBatch, RecPreProcessorError> {
+        if crops.is_empty() {
+            return Err(RecPreProcessorError::EmptyRegions);
+        }
+        if self.config.target_height == 0 || self.config.max_width == 0 {
+            return Err(RecPreProcessorError::InvalidConfiguration);
+        }
+        for (index, crop) in crops.iter().enumerate() {
+            if crop.width() == 0 || crop.height() == 0 {
+                return Err(RecPreProcessorError::ZeroArea { index });
+            }
+        }
+
+        let target_height = self.config.target_height;
+        let desired_widths: Vec<u32> = crops
+            .iter()
+            .map(|crop| {
+                let aspect_ratio = crop.width() as f64 / crop.height() as f64;
                 (aspect_ratio * target_height as f64).ceil().max(1.0) as u32
             })
             .collect();
         let max_width = self.batch_width(desired_widths.iter().copied().max().unwrap_or(1));
-        let batch_size = regions.len();
+        let batch_size = crops.len();
 
         let mut batch =
             Array4::<f32>::zeros((batch_size, 3, target_height as usize, max_width as usize));
@@ -403,12 +433,11 @@ impl RecPreProcessor {
         let order = self.config.color_order;
         let mut valid_widths = Vec::with_capacity(batch_size);
 
-        for (index, region) in regions.iter().copied().enumerate() {
+        for (index, crop) in crops.iter().enumerate() {
             let target_width = desired_widths[index].clamp(1, width_cap);
-            let cropped = image.crop_imm(region.x, region.y, region.width, region.height);
             // Bilinear filtering mirrors the `cv2.resize` default used by PaddleOCR.
-            let resized = cropped.resize_exact(target_width, target_height, FilterType::Triangle);
-            let rgb_image = resized.to_rgb8();
+            let rgb_image =
+                imageops::resize(crop, target_width, target_height, FilterType::Triangle);
 
             for (x, y, pixel) in rgb_image.enumerate_pixels() {
                 for channel in 0..3 {

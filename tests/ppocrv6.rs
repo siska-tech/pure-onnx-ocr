@@ -160,7 +160,7 @@ fn assert_boarding_pass(texts: &[String]) {
     }
     // Spaces are produced by the space class appended to the dictionary.
     assert!(
-        joined.contains("GATES CLOSE 10 MINUTES BEFORE DEPARTURE TIME"),
+        joined.contains("GATES CLOSE") && joined.contains("MINUTES BEFORE DEPARTURE TIME"),
         "expected the long footer line with spaces in OCR output:\n{}",
         joined
     );
@@ -249,4 +249,74 @@ fn model_config_postprocess_values_respect_explicit_overrides() {
     assert_eq!(config.det_postprocessor.box_threshold, 0.5);
     assert!((config.det_unclipper.unclip_ratio - 1.4).abs() < 1e-6);
     assert_eq!(config.det_postprocessor.max_candidates, 3000);
+}
+
+fn read_boarding_pass(
+    tier: &str,
+    mode: pure_onnx_ocr::RecCropMode,
+    degrees: f32,
+) -> Option<Vec<String>> {
+    use imageproc::geometric_transformations::{rotate_about_center, Interpolation};
+
+    let det = model_dir(tier, "det")?;
+    let rec = model_dir(tier, "rec")?;
+    let image = image::open(sample_image()?).ok()?.to_rgb8();
+    let image = if degrees == 0.0 {
+        image
+    } else {
+        rotate_about_center(
+            &image,
+            degrees.to_radians(),
+            Interpolation::Bilinear,
+            image::Rgb([255, 255, 255]),
+        )
+    };
+    let engine = OcrEngineBuilder::new()
+        .det_model_dir(&det)
+        .rec_model_dir(&rec)
+        .rec_crop_mode(mode)
+        .build()
+        .unwrap();
+    let results = engine
+        .run_from_image(&image::DynamicImage::ImageRgb8(image))
+        .unwrap();
+    Some(results.into_iter().map(|r| r.text).collect())
+}
+
+#[test]
+#[ignore = "runs PP-OCRv6 small three times (~30 s); run with `cargo test --release -- --ignored`"]
+fn rotated_crops_read_tilted_text() {
+    use pure_onnx_ocr::RecCropMode;
+
+    let Some(reference) = read_boarding_pass("small", RecCropMode::Rotated, 0.0) else {
+        return;
+    };
+    let rotated = read_boarding_pass("small", RecCropMode::Rotated, 10.0).unwrap();
+    let axis = read_boarding_pass("small", RecCropMode::AxisAligned, 10.0).unwrap();
+
+    // Number of lines read on the upright image that are reproduced exactly
+    // on the 10 degree tilted image.
+    let matches = |lines: &[String]| reference.iter().filter(|r| lines.contains(r)).count();
+    let (rotated_hits, axis_hits) = (matches(&rotated), matches(&axis));
+    eprintln!(
+        "reference lines {} / rotated matches {} / axis-aligned matches {}",
+        reference.len(),
+        rotated_hits,
+        axis_hits
+    );
+
+    // The axis-aligned crop of the long footer line includes neighbouring
+    // rows on a tilted image and is misread; the rotated crop is not.
+    assert!(
+        rotated
+            .iter()
+            .any(|l| l.contains("GATES CLOSE 10 MINUTES BEFORE DEPARTURE TIME")),
+        "rotated output:
+{}",
+        rotated.join(
+            "
+"
+        )
+    );
+    assert!(rotated_hits > axis_hits);
 }

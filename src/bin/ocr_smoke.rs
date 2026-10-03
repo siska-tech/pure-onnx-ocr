@@ -6,7 +6,8 @@ use std::process;
 use std::time::Instant;
 
 use pure_onnx_ocr::{
-    DetLimitType, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings,
+    DetLimitType, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, RecCropMode,
+    StageTimings,
 };
 
 const DEFAULT_DET_MODEL: &str = "models/ppocrv5/det.onnx";
@@ -63,6 +64,9 @@ fn run() -> Result<(), RunError> {
     }
     if cli.det_params_from_config {
         builder = builder.det_postprocess_from_model_config(true);
+    }
+    if let Some(mode) = cli.crop_mode {
+        builder = builder.rec_crop_mode(mode);
     }
 
     if let Some(limit) = cli.det_limit_side_len {
@@ -151,6 +155,7 @@ struct Cli {
     det_limit_type: Option<DetLimitType>,
     det_max_side_limit: Option<u32>,
     det_params_from_config: bool,
+    crop_mode: Option<RecCropMode>,
     det_limit_side_len: Option<u32>,
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
@@ -181,6 +186,7 @@ impl Cli {
             det_limit_type: None,
             det_max_side_limit: None,
             det_params_from_config: false,
+            crop_mode: None,
             det_limit_side_len: None,
             det_unclip_ratio: None,
             rec_batch_size: None,
@@ -256,6 +262,19 @@ impl Cli {
                 }
                 "--det-params-from-config" => {
                     cli.det_params_from_config = true;
+                }
+                "--crop-mode" => {
+                    let value = next_value("--crop-mode", &mut iter)?;
+                    cli.crop_mode = Some(match value.as_str() {
+                        "rotated" => RecCropMode::Rotated,
+                        "axis" => RecCropMode::AxisAligned,
+                        other => {
+                            return Err(RunError::cli(format!(
+                            "invalid value for --crop-mode: `{}` (expected `rotated` or `axis`)",
+                            other
+                        )))
+                        }
+                    });
                 }
                 "--det-limit-side-len" => {
                     let value = next_value("--det-limit-side-len", &mut iter)?;
