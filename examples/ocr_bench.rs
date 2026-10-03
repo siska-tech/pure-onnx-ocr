@@ -282,7 +282,7 @@ fn main() {
         );
         if pipeline_models
             .as_ref()
-            .map_or(true, |list| list.iter().any(|m| m == spec.name))
+            .is_none_or(|list| list.iter().any(|m| m == spec.name))
         {
             engines.push((spec.name, engine));
         }
@@ -290,15 +290,17 @@ fn main() {
 
     // ---- 2. Full pipeline on real images --------------------------------
     // Warm-up run per (model, image): compiles plans, reported as "first run".
-    let mut rows: Vec<(
-        &str,
-        &str,
+    // (model, image, regions, first run, totals, detection, recognition)
+    type Row<'a> = (
+        &'a str,
+        &'a str,
         usize,
         Duration,
         Vec<Duration>,
         Vec<Duration>,
         Vec<Duration>,
-    )> = Vec::new();
+    );
+    let mut rows: Vec<Row> = Vec::new();
     for (name, engine) in &engines {
         for (image_name, image) in &loaded_images {
             let first = engine.run_with_metrics_from_image(image).unwrap();
