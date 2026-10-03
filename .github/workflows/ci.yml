@@ -46,7 +46,7 @@ jobs:
           key: fixtures-${{ hashFiles('scripts/fetch_fixtures.sh') }}
       - name: Download model fixtures (PP-OCRv6 tiny, PP-OCRv5 mobile, classifiers)
         shell: bash
-        run: scripts/fetch_fixtures.sh
+        run: bash scripts/fetch_fixtures.sh
       # Release mode: tract inference in debug builds is too slow for the
       # end-to-end tests.
       - run: cargo test --release --workspace
