@@ -1,6 +1,7 @@
 //! # Pure ONNX OCR
 //!
-//! A Pure Rust OCR pipeline that mirrors the PaddleOCR DBNet + SVTR stack.
+//! A Pure Rust OCR pipeline that mirrors the PaddleOCR DBNet + CTC recognition
+//! stack and runs the PP-OCRv5 and PP-OCRv6 ONNX exports.
 //! The crate exposes ergonomic builders and processing stages that let you
 //! load ONNX models, prepare image batches, and decode recognition logits
 //! without any C/C++ dependencies.
@@ -10,16 +11,24 @@
 //! [`OcrEngine::run_from_image`].  Lower-level modules remain available
 //! when you need to plug specific stages into an existing pipeline.
 
+pub mod crop;
 pub mod ctc;
 pub mod detection;
 pub mod dictionary;
 pub mod engine;
+pub mod imgproc;
+mod onnx_model;
+pub mod orientation;
+pub mod paddle_config;
 pub mod postprocessing;
 pub mod preprocessing;
 pub mod recognition;
+mod threading;
+mod time;
 
 /// Re-export of the CTC decoding utilities so applications can customise
 /// post-processing while keeping consistent types.
+pub use crop::{crop_quad, min_area_quad, Quad, RecCropMode};
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
 /// Re-export of detection inference helpers for direct DBNet integration.
 pub use detection::{DetInferenceOutput, DetInferenceSession};
@@ -27,24 +36,29 @@ pub use dictionary::{DictionaryError, RecDictionary};
 /// High-level façade providing an ergonomic OCR API.
 pub use engine::{
     OcrEngine, OcrEngineBuilder, OcrEngineConfig, OcrError, OcrResult, OcrRunWithMetrics,
-    OcrTimings, StageTimings,
+    OcrTimings, StageTimings, PADDLE_CONFIG_FILE, PADDLE_MODEL_FILE,
 };
 /// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
+/// PaddleOCR `inference.yml` reader used for PP-OCRv5 / PP-OCRv6 model directories.
+pub use orientation::{OrientationClassifier, OrientationError, OrientationPrediction};
+pub use paddle_config::{ColorOrder, PaddleConfigError, PaddleInferenceConfig};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
     DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError, DetScaleRounding,
     DetUnclipLineJoin,
 };
 pub use preprocessing::{
-    DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, PreprocessedDetInput,
-    PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig, RecPreProcessorError,
-    RecTextRegion,
+    DetLimitType, DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError,
+    PreprocessedDetInput, PreprocessedRecBatch, RecPreProcessor, RecPreProcessorConfig,
+    RecPreProcessorError, RecTextRegion, IMAGENET_MEAN, IMAGENET_STD,
 };
 pub use recognition::{
     RecInferenceOutput, RecInferenceSession, RecPostProcessor, RecPostProcessorConfig,
     RecPostProcessorError,
 };
+/// Inference thread settings (see [`OcrEngineBuilder::inference_threads`]).
+pub use threading::{default_inference_threads, MULTITHREAD_SUPPORTED};
 
 use std::path::Path;
 use tract_onnx::prelude::*;
@@ -121,55 +135,56 @@ fn run_dummy_inference(
     label: &str,
 ) -> TractResult<TVec<Tensor>> {
     let model_path = model_path.as_ref();
-    println!("[{}] Loading model from {:?}", label, model_path);
+    log::debug!("[{}] Loading model from {:?}", label, model_path);
 
-    let start = std::time::Instant::now();
+    let start = crate::time::Instant::now();
 
-    let mut model = tract_onnx::onnx()
-        .with_ignore_output_shapes(true)
-        .model_for_path(model_path)?;
-    println!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
+    let mut model = onnx_model::load_paddle_onnx(model_path)?;
+    log::debug!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
 
-    model.set_input_fact(0, InferenceFact::from(&dummy_input))?;
-    println!("[{}] Input fact set, elapsed: {:?}", label, start.elapsed());
+    model.set_input_fact(
+        0,
+        InferenceFact::dt_shape(dummy_input.datum_type(), dummy_input.shape()),
+    )?;
+    log::debug!("[{}] Input fact set, elapsed: {:?}", label, start.elapsed());
 
-    println!(
+    log::debug!(
         "[{}] Starting model conversion to typed, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_typed()?;
 
-    println!(
+    log::debug!(
         "[{}] Starting decluttering, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_decluttered()?;
 
-    println!(
+    log::debug!(
         "[{}] Starting optimization, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_optimized()?;
 
-    println!(
+    log::debug!(
         "[{}] Making runnable, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_runnable()?;
 
-    println!("[{}] Total preparation time: {:?}", label, start.elapsed());
+    log::debug!("[{}] Total preparation time: {:?}", label, start.elapsed());
 
-    println!(
+    log::debug!(
         "[{}] Running inference, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let outputs = model.run(tvec!(dummy_input.into()))?;
-    println!(
+    log::debug!(
         "[{}] Inference complete, elapsed: {:?}",
         label,
         start.elapsed()
@@ -246,7 +261,7 @@ mod tests {
             "SVTR tensor dimensions after batch should be positive"
         );
 
-        let view = first.to_array_view::<f32>()?;
+        let view = first.to_plain_array_view::<f32>()?;
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
         for value in view.iter() {

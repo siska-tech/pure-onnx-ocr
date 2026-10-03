@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
-use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, StageTimings};
+use pure_onnx_ocr::{
+    DetLimitType, OcrEngineBuilder, OcrError, OcrResult, OcrRunWithMetrics, RecCropMode,
+    StageTimings,
+};
 
 const DEFAULT_DET_MODEL: &str = "models/ppocrv5/det.onnx";
 const DEFAULT_REC_MODEL: &str = "models/ppocrv5/rec.onnx";
@@ -23,16 +26,54 @@ fn main() {
 
 fn run() -> Result<(), RunError> {
     let cli = Cli::parse(env::args())?;
+    init_logger(cli.verbose);
 
     if cli.show_help {
         println!("{}", Cli::usage());
         return Ok(());
     }
 
-    let mut builder = OcrEngineBuilder::new()
-        .det_model_path(&cli.det_model)
-        .rec_model_path(&cli.rec_model)
-        .dictionary_path(&cli.dictionary);
+    let mut builder = OcrEngineBuilder::new();
+    builder = match &cli.det_model_dir {
+        Some(dir) => builder.det_model_dir(dir),
+        None => builder.det_model_path(&cli.det_model),
+    };
+    builder = match &cli.rec_model_dir {
+        Some(dir) => builder.rec_model_dir(dir),
+        None => builder.rec_model_path(&cli.rec_model),
+    };
+    match (&cli.dictionary, &cli.rec_model_dir) {
+        (Some(dictionary), _) => builder = builder.dictionary_path(dictionary),
+        (None, Some(_)) => {}
+        (None, None) => builder = builder.dictionary_path(DEFAULT_DICTIONARY),
+    }
+    if let Some(threshold) = cli.det_thresh {
+        builder = builder.det_threshold(threshold);
+    }
+    if let Some(threshold) = cli.det_box_thresh {
+        builder = builder.det_box_threshold(threshold);
+    }
+    if cli.no_space_char {
+        builder = builder.rec_use_space_char(false);
+    }
+    if let Some(limit_type) = cli.det_limit_type {
+        builder = builder.det_limit_type(limit_type);
+    }
+    if let Some(limit) = cli.det_max_side_limit {
+        builder = builder.det_max_side_limit(limit);
+    }
+    if cli.det_params_from_config {
+        builder = builder.det_postprocess_from_model_config(true);
+    }
+    if let Some(mode) = cli.crop_mode {
+        builder = builder.rec_crop_mode(mode);
+    }
+    if let Some(dir) = &cli.doc_ori_model_dir {
+        builder = builder.doc_orientation_model_dir(dir);
+    }
+    if let Some(dir) = &cli.textline_ori_model_dir {
+        builder = builder.textline_orientation_model_dir(dir);
+    }
 
     if let Some(limit) = cli.det_limit_side_len {
         builder = builder.det_limit_side_len(limit);
@@ -43,6 +84,9 @@ fn run() -> Result<(), RunError> {
     if let Some(batch_size) = cli.rec_batch_size {
         builder = builder.rec_batch_size(batch_size);
     }
+    if let Some(threads) = cli.threads {
+        builder = builder.inference_threads(threads);
+    }
 
     let engine = builder.build().map_err(RunError::from)?;
 
@@ -51,23 +95,35 @@ fn run() -> Result<(), RunError> {
         .as_ref()
         .expect("image path should be present when help is not requested");
 
-    let (results, total_duration) = if cli.benchmark {
-        let run = engine
-            .run_with_metrics_from_path(image_path)
-            .map_err(RunError::from)?;
+    let start = Instant::now();
+    let run = engine
+        .run_with_metrics_from_path(image_path)
+        .map_err(RunError::from)?;
+    let total_duration = start.elapsed();
+    if cli.benchmark {
         print_benchmark_report(image_path, &run);
-        (run.results, run.timings.total)
-    } else {
-        let start = Instant::now();
-        let run_results = engine.run_from_path(image_path).map_err(RunError::from)?;
-        (run_results, start.elapsed())
-    };
+    }
+    let doc_orientation_angle = run.doc_orientation_angle;
+    let results = run.results;
 
     println!("Input image: {}", image_path.display());
-    println!("Detection model: {}", engine.det_model_path().display());
-    println!("Recognition model: {}", engine.rec_model_path().display());
-    println!("Dictionary: {}", engine.dictionary_path().display());
+    println!(
+        "Detection model: {}",
+        display_source(engine.det_model_path())
+    );
+    println!(
+        "Recognition model: {}",
+        display_source(engine.rec_model_path())
+    );
+    println!("Dictionary: {}", display_source(engine.dictionary_path()));
     println!("Recognition batch size: {}", engine.rec_batch_size());
+    println!("Inference threads: {}", engine.config().inference_threads);
+    if let Some(angle) = doc_orientation_angle {
+        println!(
+            "Document orientation: {} degrees (rotated upright before detection)",
+            angle
+        );
+    }
     println!("Total time: {:.3} seconds", total_duration.as_secs_f64());
 
     if results.is_empty() {
@@ -111,11 +167,24 @@ struct Cli {
     image_path: Option<PathBuf>,
     det_model: PathBuf,
     rec_model: PathBuf,
-    dictionary: PathBuf,
+    dictionary: Option<PathBuf>,
+    det_model_dir: Option<PathBuf>,
+    rec_model_dir: Option<PathBuf>,
+    det_thresh: Option<f32>,
+    det_box_thresh: Option<f32>,
+    no_space_char: bool,
+    det_limit_type: Option<DetLimitType>,
+    det_max_side_limit: Option<u32>,
+    det_params_from_config: bool,
+    crop_mode: Option<RecCropMode>,
+    threads: Option<usize>,
+    doc_ori_model_dir: Option<PathBuf>,
+    textline_ori_model_dir: Option<PathBuf>,
     det_limit_side_len: Option<u32>,
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
     benchmark: bool,
+    verbose: bool,
     show_help: bool,
 }
 
@@ -132,11 +201,24 @@ impl Cli {
             image_path: None,
             det_model: PathBuf::from(DEFAULT_DET_MODEL),
             rec_model: PathBuf::from(DEFAULT_REC_MODEL),
-            dictionary: PathBuf::from(DEFAULT_DICTIONARY),
+            dictionary: None,
+            det_model_dir: None,
+            rec_model_dir: None,
+            det_thresh: None,
+            det_box_thresh: None,
+            no_space_char: false,
+            det_limit_type: None,
+            det_max_side_limit: None,
+            det_params_from_config: false,
+            crop_mode: None,
+            threads: None,
+            doc_ori_model_dir: None,
+            textline_ori_model_dir: None,
             det_limit_side_len: None,
             det_unclip_ratio: None,
             rec_batch_size: None,
             benchmark: false,
+            verbose: false,
             show_help: false,
         };
 
@@ -161,7 +243,85 @@ impl Cli {
                 }
                 "--dictionary" => {
                     let value = next_value("--dictionary", &mut iter)?;
-                    cli.dictionary = PathBuf::from(value);
+                    cli.dictionary = Some(PathBuf::from(value));
+                }
+                "--det-model-dir" => {
+                    let value = next_value("--det-model-dir", &mut iter)?;
+                    cli.det_model_dir = Some(PathBuf::from(value));
+                }
+                "--rec-model-dir" => {
+                    let value = next_value("--rec-model-dir", &mut iter)?;
+                    cli.rec_model_dir = Some(PathBuf::from(value));
+                }
+                "--det-thresh" => {
+                    let value = next_value("--det-thresh", &mut iter)?;
+                    cli.det_thresh = Some(parse_unit_interval("--det-thresh", &value)?);
+                }
+                "--det-box-thresh" => {
+                    let value = next_value("--det-box-thresh", &mut iter)?;
+                    cli.det_box_thresh = Some(parse_unit_interval("--det-box-thresh", &value)?);
+                }
+                "--no-space-char" => {
+                    cli.no_space_char = true;
+                }
+                "--det-limit-type" => {
+                    let value = next_value("--det-limit-type", &mut iter)?;
+                    cli.det_limit_type = Some(match value.as_str() {
+                        "max" => DetLimitType::Max,
+                        "min" => DetLimitType::Min,
+                        other => {
+                            return Err(RunError::cli(format!(
+                            "invalid value for --det-limit-type: `{}` (expected `max` or `min`)",
+                            other
+                        )))
+                        }
+                    });
+                }
+                "--det-max-side-limit" => {
+                    let value = next_value("--det-max-side-limit", &mut iter)?;
+                    let parsed = value.parse::<u32>().map_err(|_| {
+                        RunError::cli(format!(
+                            "invalid value for --det-max-side-limit: `{}`",
+                            value
+                        ))
+                    })?;
+                    cli.det_max_side_limit = Some(parsed);
+                }
+                "--det-params-from-config" => {
+                    cli.det_params_from_config = true;
+                }
+                "--doc-ori-model-dir" => {
+                    let value = next_value("--doc-ori-model-dir", &mut iter)?;
+                    cli.doc_ori_model_dir = Some(PathBuf::from(value));
+                }
+                "--textline-ori-model-dir" => {
+                    let value = next_value("--textline-ori-model-dir", &mut iter)?;
+                    cli.textline_ori_model_dir = Some(PathBuf::from(value));
+                }
+                "--threads" => {
+                    let value = next_value("--threads", &mut iter)?;
+                    let parsed = value.parse::<usize>().map_err(|_| {
+                        RunError::cli(format!("invalid value for --threads: `{}`", value))
+                    })?;
+                    if parsed == 0 {
+                        return Err(RunError::cli(
+                            "--threads must be greater than zero".to_string(),
+                        ));
+                    }
+                    cli.threads = Some(parsed);
+                }
+                "--crop-mode" => {
+                    let value = next_value("--crop-mode", &mut iter)?;
+                    cli.crop_mode = Some(match value.as_str() {
+                        "rotated" => RecCropMode::Rotated,
+                        "axis" => RecCropMode::AxisAligned,
+                        other => {
+                            return Err(RunError::cli(format!(
+                            "invalid value for --crop-mode: `{}` (expected `rotated` or `axis`)",
+                            other
+                        )))
+                        }
+                    });
                 }
                 "--det-limit-side-len" => {
                     let value = next_value("--det-limit-side-len", &mut iter)?;
@@ -194,6 +354,9 @@ impl Cli {
                 }
                 "--benchmark" => {
                     cli.benchmark = true;
+                }
+                "--verbose" | "-v" => {
+                    cli.verbose = true;
                 }
                 other if other.starts_with('-') => {
                     return Err(RunError::cli(format!("unknown option `{}`", other)));
@@ -244,8 +407,56 @@ impl Cli {
         );
         text.push_str("      --det-unclip-ratio R      Override detection polygon unclip ratio\n");
         text.push_str("      --rec-batch-size N        Override recognition batch size (> 0)\n");
+        text.push_str(
+            "      --det-model-dir DIR       PaddleOCR detection model directory (inference.onnx + inference.yml)\n",
+        );
+        text.push_str(
+            "      --rec-model-dir DIR       PaddleOCR recognition model directory; its inference.yml supplies the dictionary\n",
+        );
+        text.push_str(
+            "      --det-thresh T            DBNet binarisation threshold (default: 0.3)\n",
+        );
+        text.push_str(
+            "      --det-box-thresh T        Minimum mean score per detected box (default: 0.6)\n",
+        );
+        text.push_str(
+            "      --det-limit-type max|min  Bound the longest (max, default) or shortest (min) side by --det-limit-side-len\n",
+        );
+        text.push_str(
+            "      --det-max-side-limit N    Upper bound for the longest detection side (default: 4000)\n",
+        );
+        text.push_str(
+            "      --det-params-from-config  Use thresh/box_thresh/unclip_ratio from the detection inference.yml\n",
+        );
+        text.push_str(
+            "      --doc-ori-model-dir DIR   Document orientation classifier (PP-LCNet_x1_0_doc_ori) directory
+",
+        );
+        text.push_str(
+            "      --textline-ori-model-dir DIR  Text-line orientation classifier (PP-LCNet_x*_textline_ori) directory
+",
+        );
+        text.push_str(
+            "      --no-space-char           Do not append the space class to the dictionary\n",
+        );
+        text.push_str(
+            "      --threads N               Inference threads (default: logical CPUs, at most 8)\n",
+        );
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
+        text.push_str(
+            "  -v, --verbose                 Print model loading and inference logs to stderr\n",
+        );
         text
+    }
+}
+
+fn parse_unit_interval(flag: &str, value: &str) -> Result<f32, RunError> {
+    match value.parse::<f32>() {
+        Ok(parsed) if (0.0..=1.0).contains(&parsed) => Ok(parsed),
+        _ => Err(RunError::cli(format!(
+            "invalid value for {}: `{}` (expected a number between 0 and 1)",
+            flag, value
+        ))),
     }
 }
 
@@ -295,10 +506,11 @@ impl std::error::Error for RunError {
     }
 }
 
-fn print_benchmark_report(image_path: &PathBuf, run: &OcrRunWithMetrics) {
+fn print_benchmark_report(image_path: &std::path::Path, run: &OcrRunWithMetrics) {
     println!("[INFO] benchmark.image={}", image_path.display());
     print_timing_line("benchmark.total_seconds", run.timings.total);
     print_timing_line("benchmark.image_decode_seconds", run.timings.image_decode);
+    print_timing_line("benchmark.orientation_seconds", run.timings.orientation);
     print_stage_timings("benchmark.det", &run.timings.detection);
     print_stage_timings("benchmark.rec", &run.timings.recognition);
 }
@@ -314,4 +526,39 @@ fn print_stage_timings(prefix: &str, stage: &StageTimings) {
         &format!("{}.postprocess_seconds", prefix),
         stage.postprocess,
     );
+}
+
+/// Minimal stderr logger so the CLI can surface the library's `log` output
+/// without pulling in a logging framework.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: StderrLogger = StderrLogger;
+
+fn init_logger(verbose: bool) {
+    if log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(if verbose {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Warn
+        });
+    }
+}
+
+fn display_source(path: Option<&std::path::Path>) -> String {
+    path.map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<memory>".to_string())
 }

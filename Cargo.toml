@@ -1,20 +1,32 @@
 [package]
 name = "pure-onnx-ocr"
-version = "0.1.0"
-rust-version = "1.70"
+version = "0.2.0"
+rust-version = "1.91"
 edition = "2021"
-description = "Pure Rust OCR pipeline that runs PaddleOCR DBNet + SVTR ONNX models without C/C++ dependencies."
+description = "Pure Rust OCR pipeline that runs PaddleOCR (PP-OCRv5 / PP-OCRv6) DBNet + CTC ONNX models without C/C++ dependencies."
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/siska-tech/pure-onnx-ocr"
 homepage = "https://github.com/siska-tech/pure-onnx-ocr"
 documentation = "https://docs.rs/pure_onnx_ocr"
 keywords = ["ocr", "onnx", "paddleocr", "text-detection", "text-recognition"]
-categories = ["science::ai-and-machine-learning", "science::computer-vision"]
+categories = ["computer-vision", "science"]
+exclude = ["bindings/"]
+
+[features]
+default = ["multithread"]
+# Run tract's matrix multiplications on a rayon thread pool (native targets).
+# WebAssembly builds always run single-threaded.
+multithread = ["tract-linalg/multithread-mm", "dep:rayon"]
 
 [dependencies]
-tract-onnx = "0.20"
-ndarray = "0.15"
+tract-onnx = "0.23"
+# Same version as tract-onnx (Cargo unifies them); only used to turn on the
+# rayon-based parallel matrix multiplication through the `multithread` feature.
+tract-linalg = "0.23"
+rayon = { version = "1", optional = true }
+log = "0.4"
+ndarray = "0.17"
 time = "0.3.44"
 i_overlay = "4.1.1"
 geo-types = "=0.7.12"
@@ -23,3 +35,15 @@ imageproc = "0.25.0"
 
 [dev-dependencies]
 once_cell = "1.21"
+serde_json = "1"
+
+# Browser WebAssembly (`wasm32-unknown-unknown`):
+# - tract-onnx-opl pulls in getrandom 0.4, which needs its JS backend there.
+# - std::time::Instant panics there; web-time provides a performance.now()
+#   based drop-in replacement.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+web-time = "1"
+
+[workspace]
+members = ["bindings/wasm"]

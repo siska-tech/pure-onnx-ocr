@@ -1,12 +1,14 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::onnx_model::PlanCache;
 use crate::preprocessing::PreprocessedDetInput;
+
+/// Default number of compiled detection plans (one per input size) kept in memory.
+pub const DEFAULT_DET_PLAN_CACHE: usize = 4;
 use ndarray::{Array2, Axis};
 use tract_onnx::prelude::*;
-use tract_onnx::tract_core::anyhow::anyhow;
+use tract_onnx::tract_core::internal::anyhow;
 
 /// Result of running DBNet detection inference.
 #[derive(Debug, Clone)]
@@ -18,20 +20,30 @@ pub struct DetInferenceOutput {
 #[derive(Debug)]
 pub struct DetInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(u32, u32), Arc<TypedRunnableModel<TypedModel>>>>,
+    cache: std::sync::Mutex<PlanCache<(u32, u32)>>,
+    executor: crate::threading::Executor,
 }
 
 impl DetInferenceSession {
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
         let model_path = model_path.as_ref();
-        println!("[DetInfer] Loading detection model from {:?}", model_path);
+        log::info!("[DetInfer] Loading detection model from {:?}", model_path);
 
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
+        Self::from_model(crate::onnx_model::load_paddle_onnx(model_path)?)
+    }
 
-        let height = inference_model.symbol_table.sym("height");
-        let width = inference_model.symbol_table.sym("width");
+    /// Loads a DBNet detection model from ONNX bytes held in memory.
+    pub fn from_bytes(model_bytes: &[u8]) -> TractResult<Self> {
+        log::info!(
+            "[DetInfer] Loading detection model from memory ({} bytes)",
+            model_bytes.len()
+        );
+        Self::from_model(crate::onnx_model::load_paddle_onnx_from_bytes(model_bytes)?)
+    }
+
+    fn from_model(mut inference_model: InferenceModel) -> TractResult<Self> {
+        let height = inference_model.symbols.sym("height");
+        let width = inference_model.symbols.sym("width");
         inference_model.set_input_fact(
             0,
             InferenceFact::dt_shape(
@@ -40,15 +52,16 @@ impl DetInferenceSession {
             ),
         )?;
 
-        println!("[DetInfer] Detection model prepared");
+        log::debug!("[DetInfer] Detection model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: RefCell::new(HashMap::new()),
+            cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_DET_PLAN_CACHE)),
+            executor: crate::threading::Executor::SingleThread,
         })
     }
 
     pub fn run(&self, input: &PreprocessedDetInput) -> TractResult<DetInferenceOutput> {
-        println!(
+        log::debug!(
             "[DetInfer] Running inference with input dims {:?}",
             input.tensor.shape()
         );
@@ -56,20 +69,22 @@ impl DetInferenceSession {
         let (width, height) = input.resized_dims;
         let plan = self.runnable_for_dims(width, height)?;
 
-        let outputs = plan.run(tvec!(input.tensor.clone().into()))?;
+        let outputs = crate::threading::run_with(&self.executor, || {
+            plan.run(tvec!(input.tensor.clone().into()))
+        })?;
         let output_tensor = outputs
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("DBNet model did not return any outputs"))?;
 
-        let view = output_tensor.to_array_view::<f32>()?;
+        let view = output_tensor.to_plain_array_view::<f32>()?;
         let view = view.into_dimensionality::<ndarray::Ix4>()?;
         let probability_map = view
             .index_axis(Axis(0), 0)
             .index_axis(Axis(0), 0)
             .to_owned();
 
-        println!(
+        log::debug!(
             "[DetInfer] Inference complete, output dims {:?}",
             probability_map.raw_dim()
         );
@@ -77,18 +92,37 @@ impl DetInferenceSession {
         Ok(DetInferenceOutput { probability_map })
     }
 
-    fn runnable_for_dims(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> TractResult<Arc<TypedRunnableModel<TypedModel>>> {
-        if let Some(plan) = self.cache.borrow().get(&(width, height)) {
-            return Ok(Arc::clone(plan));
+    /// Runs inference on a pool of `threads` worker threads (`1` runs
+    /// single-threaded). Has no effect without the `multithread` feature or
+    /// on WebAssembly.
+    pub fn set_inference_threads(&mut self, threads: usize) {
+        self.executor = crate::threading::executor_for(threads);
+    }
+
+    pub(crate) fn set_executor(&mut self, executor: crate::threading::Executor) {
+        self.executor = executor;
+    }
+
+    /// Sets how many compiled plans (one per input shape) are kept in memory.
+    /// The least recently used plan is dropped when the limit is exceeded.
+    pub fn set_plan_cache_capacity(&self, capacity: usize) {
+        crate::onnx_model::lock_cache(&self.cache).set_capacity(capacity);
+    }
+
+    /// Returns the number of compiled plans currently cached.
+    pub fn cached_plan_count(&self) -> usize {
+        crate::onnx_model::lock_cache(&self.cache).len()
+    }
+
+    fn runnable_for_dims(&self, width: u32, height: u32) -> TractResult<Arc<TypedRunnableModel>> {
+        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get((width, height)) {
+            return Ok(plan);
         }
 
-        println!(
+        log::debug!(
             "[DetInfer] Preparing runnable model for dims ({}, {})",
-            width, height
+            width,
+            height
         );
 
         let mut model = self.base_model.clone();
@@ -111,10 +145,7 @@ impl DetInferenceSession {
             .into_optimized()?
             .into_runnable()?;
 
-        let plan = Arc::new(plan);
-        self.cache
-            .borrow_mut()
-            .insert((width, height), Arc::clone(&plan));
+        crate::onnx_model::lock_cache(&self.cache).insert((width, height), Arc::clone(&plan));
 
         Ok(plan)
     }
@@ -173,6 +204,7 @@ mod tests {
         let image = dummy_image(320, 320);
         let preprocessor = DetPreProcessor::new(DetPreProcessorConfig {
             limit_side_len: 320,
+            ..DetPreProcessorConfig::default()
         });
         let preprocessed = preprocessor
             .process(&image)

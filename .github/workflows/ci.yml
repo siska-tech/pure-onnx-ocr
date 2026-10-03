@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache model fixtures
+        uses: actions/cache@v4
+        with:
+          path: |
+            tests/fixtures/models
+            tests/fixtures/images
+          key: fixtures-${{ hashFiles('scripts/fetch_fixtures.sh') }}
+      - name: Download model fixtures (PP-OCRv6 tiny, PP-OCRv5 mobile, classifiers)
+        shell: bash
+        run: bash scripts/fetch_fixtures.sh
+      # Release mode: tract inference in debug builds is too slow for the
+      # end-to-end tests.
+      - run: cargo test --release --workspace
+      - name: Single-threaded build (no default features)
+        run: cargo test --release --no-default-features --lib
+
+  msrv:
+    name: MSRV (1.91)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
+  wasm:
+    name: WebAssembly builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Browser bindings (wasm32-unknown-unknown, SIMD via .cargo/config.toml)
+        run: cargo build --release -p pure-onnx-ocr-wasm --target wasm32-unknown-unknown
+      - name: Library for WASI
+        run: cargo build --release --lib --target wasm32-wasip1

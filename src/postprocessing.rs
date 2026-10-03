@@ -4,7 +4,7 @@ use i_overlay::float::overlay::OverlayOptions;
 use i_overlay::mesh::outline::offset::OutlineOffset;
 use i_overlay::mesh::style::{LineJoin, OutlineStyle};
 use image::{GrayImage, Luma};
-use imageproc::contours::{find_contours, Contour};
+use imageproc::contours::{find_contours, BorderType, Contour};
 use imageproc::point::Point;
 use ndarray::Array2;
 use std::error::Error;
@@ -17,6 +17,13 @@ pub struct DetPostProcessorConfig {
     pub threshold: f32,
     /// Minimum contour area (in pixels) to keep.
     pub min_area: f32,
+    /// Minimum mean probability inside a candidate region (PaddleOCR
+    /// `box_thresh`). Candidates scoring below are discarded. `0.0` disables
+    /// the filter.
+    pub box_threshold: f32,
+    /// Maximum number of candidates kept (PaddleOCR `max_candidates`),
+    /// largest regions first. `0` keeps every candidate.
+    pub max_candidates: usize,
 }
 
 impl Default for DetPostProcessorConfig {
@@ -24,6 +31,8 @@ impl Default for DetPostProcessorConfig {
         Self {
             threshold: 0.3,
             min_area: 10.0,
+            box_threshold: 0.6,
+            max_candidates: 1000,
         }
     }
 }
@@ -99,13 +108,100 @@ impl DetPostProcessor {
         let contours = find_contours::<i32>(&gray);
         let min_area = self.config.min_area.max(0.0);
 
-        let filtered = contours
+        let box_threshold = self.config.box_threshold.clamp(0.0, 1.0);
+
+        // Only outer borders describe text regions; hole borders would
+        // produce duplicate or inverted candidates.
+        let mut candidates: Vec<(f32, Contour<i32>)> = contours
             .into_iter()
+            .filter(|contour| contour.border_type == BorderType::Outer)
             .filter(|contour| contour.points.len() >= 3)
-            .filter(|contour| contour_area(contour) >= min_area)
+            .map(|contour| (contour_area(&contour), contour))
+            .filter(|(area, _)| *area >= min_area)
+            .collect();
+
+        if self.config.max_candidates > 0 && candidates.len() > self.config.max_candidates {
+            candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+            candidates.truncate(self.config.max_candidates);
+        }
+
+        let filtered = candidates
+            .into_iter()
+            .map(|(_, contour)| contour)
+            .filter(|contour| {
+                box_threshold <= 0.0 || contour_score(probability_map, contour) >= box_threshold
+            })
             .collect();
 
         Ok(filtered)
+    }
+}
+
+/// Mean probability over the pixels enclosed by `contour` (boundary included),
+/// mirroring PaddleOCR's `box_score_fast`.
+fn contour_score(probability_map: &Array2<f32>, contour: &Contour<i32>) -> f32 {
+    let (height, width) = probability_map.dim();
+    if contour.points.is_empty() || height == 0 || width == 0 {
+        return 0.0;
+    }
+
+    let clamp_x = |x: i32| x.clamp(0, width as i32 - 1);
+    let clamp_y = |y: i32| y.clamp(0, height as i32 - 1);
+    let min_x = clamp_x(contour.points.iter().map(|p| p.x).min().unwrap());
+    let max_x = clamp_x(contour.points.iter().map(|p| p.x).max().unwrap());
+    let min_y = clamp_y(contour.points.iter().map(|p| p.y).min().unwrap());
+    let max_y = clamp_y(contour.points.iter().map(|p| p.y).max().unwrap());
+    let box_w = (max_x - min_x + 1) as usize;
+    let box_h = (max_y - min_y + 1) as usize;
+    let mut mask = vec![false; box_w * box_h];
+
+    let n = contour.points.len();
+    let mut crossings: Vec<f64> = Vec::new();
+    for row in 0..box_h {
+        let y = (min_y as usize + row) as f64;
+        crossings.clear();
+        for i in 0..n {
+            let a = contour.points[i];
+            let b = contour.points[(i + 1) % n];
+            let (ay, by) = (a.y as f64, b.y as f64);
+            if (ay <= y && by > y) || (by <= y && ay > y) {
+                let t = (y - ay) / (by - ay);
+                crossings.push(a.x as f64 + t * (b.x as f64 - a.x as f64));
+            }
+        }
+        crossings.sort_by(|a, b| a.total_cmp(b));
+        for pair in crossings.chunks(2) {
+            if let [start, end] = pair {
+                let from = (start.ceil() as i32).max(min_x);
+                let to = (end.floor() as i32).min(max_x);
+                for x in from..=to {
+                    mask[row * box_w + (x - min_x) as usize] = true;
+                }
+            }
+        }
+    }
+    for point in &contour.points {
+        let x = clamp_x(point.x);
+        let y = clamp_y(point.y);
+        mask[(y - min_y) as usize * box_w + (x - min_x) as usize] = true;
+    }
+
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for row in 0..box_h {
+        for col in 0..box_w {
+            if mask[row * box_w + col] {
+                let value = probability_map[[min_y as usize + row, min_x as usize + col]];
+                sum += value.clamp(0.0, 1.0) as f64;
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f64) as f32
     }
 }
 
@@ -181,13 +277,13 @@ impl DetPolygonUnclipper {
     pub fn unclip_contours(&self, contours: &[Contour<i32>]) -> Vec<Polygon<f64>> {
         contours
             .iter()
-            .filter_map(|contour| contour_to_polygon(contour))
+            .filter_map(contour_to_polygon)
             .flat_map(|polygon| self.unclip_polygon(&polygon))
             .filter(|polygon| polygon_area(polygon) >= self.config.min_result_area)
             .collect()
     }
 
-    fn unclip_polygon(&self, polygon: &Polygon<f64>) -> Vec<Polygon<f64>> {
+    pub(crate) fn unclip_polygon(&self, polygon: &Polygon<f64>) -> Vec<Polygon<f64>> {
         let distance = unclip_distance(polygon, self.config.unclip_ratio.max(0.0));
         if distance <= f64::EPSILON {
             return vec![polygon.clone()];
@@ -485,10 +581,181 @@ fn round_fractional(value: f64, digits: u32) -> f64 {
     (value * factor).round() / factor
 }
 
+/// A detected text box in PaddleOCR form: the minimum-area rectangle
+/// `[tl, tr, br, bl]` and its mean probability (`box_score_fast`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetBox {
+    pub quad: crate::crop::Quad,
+    pub score: f32,
+}
+
+/// Minimum short side (in probability-map pixels) of a candidate box before
+/// and (plus 2) after unclipping, as in PaddleOCR's `DBPostProcess`.
+const DB_MIN_SIZE: f64 = 3.0;
+
+impl DetPostProcessor {
+    /// Extracts text boxes exactly like PaddleOCR's
+    /// `DBPostProcess.boxes_from_bitmap` (`score_mode = "fast"`):
+    ///
+    /// 1. binarise with `probability > threshold`;
+    /// 2. for every contour take its minimum-area rectangle and drop it when
+    ///    the short side is below 3 px;
+    /// 3. score the rectangle by the mean probability inside it and drop it
+    ///    below `box_threshold`;
+    /// 4. unclip the *rectangle* (distance = area x ratio / perimeter, round
+    ///    joins) and take the minimum-area rectangle of the result, dropping
+    ///    boxes whose short side is below 5 px.
+    ///
+    /// Boxes are returned in probability-map coordinates.
+    pub fn db_boxes(
+        &self,
+        probability_map: &Array2<f32>,
+        unclipper: &DetPolygonUnclipper,
+    ) -> Result<Vec<DetBox>, DetPostProcessorError> {
+        if probability_map.is_empty() {
+            return Err(DetPostProcessorError::EmptyProbabilityMap);
+        }
+        let threshold = self.config.threshold.clamp(0.0, 1.0);
+        let (height, width) = probability_map.dim();
+        let buffer: Vec<u8> = probability_map
+            .iter()
+            .map(|&value| if value > threshold { 255 } else { 0 })
+            .collect();
+        let gray = GrayImage::from_vec(width as u32, height as u32, buffer)
+            .ok_or(DetPostProcessorError::ImageCreationFailed)?;
+
+        // cv2.RETR_LIST: every border, outer and hole alike.
+        let contours = find_contours::<i32>(&gray);
+        let limit = if self.config.max_candidates == 0 {
+            contours.len()
+        } else {
+            contours.len().min(self.config.max_candidates)
+        };
+
+        let mut boxes = Vec::new();
+        for contour in contours.iter().take(limit) {
+            let points: Vec<(f64, f64)> = contour
+                .points
+                .iter()
+                .map(|p| (p.x as f64, p.y as f64))
+                .collect();
+            let Some(quad) = crate::crop::min_area_quad_from_points(&points) else {
+                continue;
+            };
+            if quad_short_side(&quad) < DB_MIN_SIZE {
+                continue;
+            }
+            let score = quad_score(probability_map, &quad);
+            if score < self.config.box_threshold {
+                continue;
+            }
+
+            let polygon = quad_to_polygon(&quad);
+            let Some(expanded) = unclipper
+                .unclip_polygon(&polygon)
+                .into_iter()
+                .max_by(|a, b| polygon_area(a).total_cmp(&polygon_area(b)))
+            else {
+                continue;
+            };
+            let Some(expanded_quad) = crate::crop::min_area_quad(&expanded) else {
+                continue;
+            };
+            if quad_short_side(&expanded_quad) < DB_MIN_SIZE + 2.0 {
+                continue;
+            }
+            boxes.push(DetBox {
+                quad: expanded_quad,
+                score,
+            });
+        }
+        Ok(boxes)
+    }
+}
+
+fn quad_short_side(quad: &crate::crop::Quad) -> f64 {
+    let dist = |a: (f64, f64), b: (f64, f64)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+    dist(quad[0], quad[1]).min(dist(quad[1], quad[2]))
+}
+
+fn quad_to_polygon(quad: &crate::crop::Quad) -> Polygon<f64> {
+    let mut coords: Vec<Coord<f64>> = quad.iter().map(|&(x, y)| Coord { x, y }).collect();
+    coords.push(coords[0]);
+    Polygon::new(LineString::from(coords), vec![])
+}
+
+/// Mean probability inside the quad (PaddleOCR `box_score_fast`: the quad
+/// is rasterised on its integer bounding box, boundary included).
+fn quad_score(probability_map: &Array2<f32>, quad: &crate::crop::Quad) -> f32 {
+    let (height, width) = probability_map.dim();
+    let clamp_x = |v: f64| v.clamp(0.0, (width - 1) as f64);
+    let clamp_y = |v: f64| v.clamp(0.0, (height - 1) as f64);
+    let xmin = clamp_x(
+        quad.iter()
+            .map(|p| p.0)
+            .fold(f64::INFINITY, f64::min)
+            .floor(),
+    ) as usize;
+    let xmax = clamp_x(
+        quad.iter()
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil(),
+    ) as usize;
+    let ymin = clamp_y(
+        quad.iter()
+            .map(|p| p.1)
+            .fold(f64::INFINITY, f64::min)
+            .floor(),
+    ) as usize;
+    let ymax = clamp_y(
+        quad.iter()
+            .map(|p| p.1)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil(),
+    ) as usize;
+    // fillPoly works on integer vertices (the float quad is truncated).
+    let verts: Vec<(f64, f64)> = quad.iter().map(|&(x, y)| (x.trunc(), y.trunc())).collect();
+
+    let inside = |px: f64, py: f64| {
+        let mut sign = 0i8;
+        for i in 0..4 {
+            let (ax, ay) = verts[i];
+            let (bx, by) = verts[(i + 1) % 4];
+            let cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+            if cross.abs() < 1e-9 {
+                continue;
+            }
+            let s = if cross > 0.0 { 1 } else { -1 };
+            if sign == 0 {
+                sign = s;
+            } else if s != sign {
+                return false;
+            }
+        }
+        true
+    };
+
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for y in ymin..=ymax {
+        for x in xmin..=xmax {
+            if inside(x as f64, y as f64) {
+                sum += probability_map[[y, x]] as f64;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f64) as f32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use imageproc::contours::BorderType;
     use ndarray::array;
 
     #[test]
@@ -503,6 +770,7 @@ mod tests {
         let processor = DetPostProcessor::new(DetPostProcessorConfig {
             threshold: 0.5,
             min_area: 1.0,
+            ..DetPostProcessorConfig::default()
         });
 
         let contours = processor.process_probability_map(&probability_map).unwrap();
@@ -510,6 +778,59 @@ mod tests {
 
         let area = contour_area(&contours[0]);
         assert!(area >= 1.0, "expected positive area, got {}", area);
+    }
+
+    #[test]
+    fn box_threshold_discards_low_confidence_regions() {
+        let mut probability_map = Array2::<f32>::zeros((12, 12));
+        for y in 2..6 {
+            for x in 2..6 {
+                probability_map[[y, x]] = 0.9;
+            }
+        }
+        for y in 7..11 {
+            for x in 7..11 {
+                probability_map[[y, x]] = 0.4;
+            }
+        }
+
+        let processor = DetPostProcessor::new(DetPostProcessorConfig {
+            threshold: 0.3,
+            min_area: 1.0,
+            box_threshold: 0.6,
+            max_candidates: 0,
+        });
+        let contours = processor.process_probability_map(&probability_map).unwrap();
+        assert_eq!(contours.len(), 1);
+        assert!(contours[0].points.iter().all(|p| p.x < 7 && p.y < 7));
+
+        let score = contour_score(&probability_map, &contours[0]);
+        assert!((score - 0.9).abs() < 1e-5, "unexpected score {}", score);
+    }
+
+    #[test]
+    fn max_candidates_keeps_largest_regions() {
+        let mut probability_map = Array2::<f32>::zeros((12, 12));
+        for y in 1..3 {
+            for x in 1..3 {
+                probability_map[[y, x]] = 1.0;
+            }
+        }
+        for y in 5..11 {
+            for x in 5..11 {
+                probability_map[[y, x]] = 1.0;
+            }
+        }
+
+        let processor = DetPostProcessor::new(DetPostProcessorConfig {
+            threshold: 0.5,
+            min_area: 0.0,
+            box_threshold: 0.0,
+            max_candidates: 1,
+        });
+        let contours = processor.process_probability_map(&probability_map).unwrap();
+        assert_eq!(contours.len(), 1);
+        assert!(contours[0].points.iter().all(|p| p.x >= 5));
     }
 
     #[test]
@@ -524,6 +845,7 @@ mod tests {
         let processor = DetPostProcessor::new(DetPostProcessorConfig {
             threshold: 0.5,
             min_area: 5.0,
+            ..DetPostProcessorConfig::default()
         });
 
         let contours = processor.process_probability_map(&probability_map).unwrap();
@@ -595,7 +917,7 @@ mod tests {
 
         assert_eq!(scaled.len(), 1);
         let exterior = scaled[0].exterior();
-        let expected = vec![
+        let expected = [
             Coord { x: 100.0, y: 40.0 },
             Coord { x: 300.0, y: 40.0 },
             Coord { x: 300.0, y: 240.0 },

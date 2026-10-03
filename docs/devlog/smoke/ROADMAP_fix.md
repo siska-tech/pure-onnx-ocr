@@ -10,7 +10,7 @@ This document captures follow-up fixes, regression hunts, and operational harden
 | Status | Task ID              | Summary                                                                 | Notes                                                  |
 | :----- | :------------------- | :---------------------------------------------------------------------- | :----------------------------------------------------- |
 | `[x]`  | `task-fix-000`       | Ship `ocr_smoke` CLI and document current limitations                   | Baseline utility is ready; OCR result quality unstable |
-| `[ ]`  | `task-fix-001`        | Investigate noisy OCR outputs from `ocr_smoke` and stabilise detection | Branch `fix/001-ocr-smoke-quality`; blank token alignment implemented, awaiting smoke test re-run |
+| `[x]`  | `task-fix-001`        | Investigate noisy OCR outputs from `ocr_smoke` and stabilise detection | Root causes (missing BGR + ImageNet normalisation, missing space class, fixed 320 px recognition width) fixed in `feature/ppocrv6-support`; see `docs/devlog/ppocrv6/` |
 | `[x]`  | `task-fix-002`        | Replace provisional recognition confidence metric with softmax-based scoring | Detects pre-softmax probability outputs or applies log-sum-exp Softmax, then averages confidences; CLI now reports calibrated values |
 | `[x]`  | `task-fix-003`        | Add benchmark-friendly timing output to `ocr_smoke` CLI                | `--benchmark` flag emits stage timings; JSON export tracked as follow-up |
 

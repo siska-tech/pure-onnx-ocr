@@ -1,3 +1,4 @@
+use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use std::{
     collections::HashMap,
     fs, io,
@@ -5,6 +6,8 @@ use std::{
 };
 
 const BLANK_TOKEN: &str = "blank";
+/// Placeholder path reported in errors for dictionaries loaded from memory.
+pub const IN_MEMORY: &str = "<memory>";
 
 /// Errors that can occur while loading or using the recognition dictionary.
 #[derive(Debug)]
@@ -19,6 +22,13 @@ pub enum DictionaryError {
         line_number: usize,
         token: String,
     },
+    /// A PaddleOCR `inference.yml` could not be parsed.
+    Config {
+        source: PaddleConfigError,
+        path: PathBuf,
+    },
+    /// A PaddleOCR `inference.yml` did not contain `PostProcess.character_dict`.
+    MissingCharacterDict { path: PathBuf },
 }
 
 impl std::fmt::Display for DictionaryError {
@@ -45,6 +55,14 @@ impl std::fmt::Display for DictionaryError {
                     path, token, line_number
                 )
             }
+            DictionaryError::Config { source, path } => {
+                write!(f, "failed to read dictionary from {:?}: {}", path, source)
+            }
+            DictionaryError::MissingCharacterDict { path } => write!(
+                f,
+                "inference config {:?} does not define PostProcess.character_dict",
+                path
+            ),
         }
     }
 }
@@ -53,6 +71,7 @@ impl std::error::Error for DictionaryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             DictionaryError::Io { source, .. } => Some(source),
+            DictionaryError::Config { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -66,17 +85,124 @@ pub struct RecDictionary {
 }
 
 impl RecDictionary {
+    /// Loads a dictionary from disk.
+    ///
+    /// Files ending in `.yml` / `.yaml` are treated as PaddleOCR
+    /// `inference.yml` configs (see [`RecDictionary::from_inference_yml`]);
+    /// everything else is read as a plain text dictionary
+    /// (see [`RecDictionary::from_text_file`]).
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
+        let path = path.as_ref();
+        if is_yaml_path(path) {
+            Self::from_inference_yml(path)
+        } else {
+            Self::from_text_file(path)
+        }
+    }
+
+    /// Loads the `PostProcess.character_dict` list from a PaddleOCR
+    /// `inference.yml`. PaddleOCR 3.x exports (PP-OCRv5 / PP-OCRv6) embed the
+    /// dictionary in this file instead of shipping a separate text file.
+    ///
+    /// Duplicate characters are accepted to mirror PaddleOCR, which indexes
+    /// the list positionally; [`RecDictionary::index_of`] returns the first
+    /// occurrence.
+    pub fn from_inference_yml(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path).map_err(|source| DictionaryError::Io {
+            source,
+            path: path.to_path_buf(),
+        })?;
+        Self::from_inference_yml_str_with_origin(&text, path)
+    }
+
+    /// Same as [`RecDictionary::from_inference_yml`] for the contents of an
+    /// `inference.yml` held in memory.
+    pub fn from_inference_yml_str(yaml: &str) -> Result<Self, DictionaryError> {
+        Self::from_inference_yml_str_with_origin(yaml, Path::new(IN_MEMORY))
+    }
+
+    fn from_inference_yml_str_with_origin(
+        yaml: &str,
+        path: &Path,
+    ) -> Result<Self, DictionaryError> {
+        let config = PaddleInferenceConfig::from_yaml_str(yaml).map_err(|source| {
+            DictionaryError::Config {
+                source,
+                path: path.to_path_buf(),
+            }
+        })?;
+        let tokens =
+            config
+                .character_dict
+                .ok_or_else(|| DictionaryError::MissingCharacterDict {
+                    path: path.to_path_buf(),
+                })?;
+        Self::from_tokens(tokens).ok_or_else(|| DictionaryError::EmptyDictionary {
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Builds a dictionary from an ordered list of characters. Index `0` is
+    /// reserved for the CTC blank token and the characters follow from `1`.
+    ///
+    /// Returns `None` when `tokens` is empty.
+    pub fn from_tokens<I, S>(tokens: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let blank = BLANK_TOKEN.to_string();
+        let mut list = vec![blank.clone()];
+        let mut reverse = HashMap::new();
+        reverse.insert(blank, 0);
+        for token in tokens {
+            let token = token.into();
+            reverse.entry(token.clone()).or_insert(list.len());
+            list.push(token);
+        }
+        if list.len() == 1 {
+            return None;
+        }
+        Some(Self {
+            tokens: list,
+            reverse,
+        })
+    }
+
+    /// Appends the space character as the last class, matching PaddleOCR's
+    /// `use_space_char=True` default for `CTCLabelDecode`.
+    ///
+    /// PaddleOCR recognition models predict `dictionary + 2` classes:
+    /// `blank`, every dictionary entry, then `" "`. Without this the last
+    /// class decodes as the fallback token (`[UNK]`) instead of a space.
+    pub fn with_space_char(mut self) -> Self {
+        let index = self.tokens.len();
+        self.reverse.entry(" ".to_string()).or_insert(index);
+        self.tokens.push(" ".to_string());
+        self
+    }
+
     /// Loads a dictionary from a UTF-8 encoded text file.
     ///
     /// Each non-empty line is treated as a token. Lines containing only
     /// whitespace are ignored. Duplicate tokens result in an error.
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
+    pub fn from_text_file(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| DictionaryError::Io {
             source,
             path: path.to_path_buf(),
         })?;
+        Self::from_text_with_origin(&contents, path)
+    }
 
+    /// Same as [`RecDictionary::from_text_file`] for dictionary text held in
+    /// memory (one character per line).
+    pub fn from_text(contents: &str) -> Result<Self, DictionaryError> {
+        Self::from_text_with_origin(contents, Path::new(IN_MEMORY))
+    }
+
+    fn from_text_with_origin(contents: &str, path: &Path) -> Result<Self, DictionaryError> {
         let mut tokens = Vec::new();
         let mut reverse = HashMap::new();
 
@@ -154,6 +280,13 @@ impl RecDictionary {
     pub fn index_of(&self, token: &str) -> Option<usize> {
         self.reverse.get(token).copied()
     }
+}
+
+fn is_yaml_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -258,5 +391,69 @@ mod tests {
         assert_eq!(dictionary.token(2), Some("second"));
 
         fs::remove_file(path).ok();
+    }
+}
+
+#[cfg(test)]
+mod paddle_yaml_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_yaml(contents: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("dict_yaml_{}.yml", timestamp));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn loads_character_dict_from_inference_yml() {
+        let path = temp_yaml(
+            "Global:\n  model_name: PP-OCRv6_tiny_rec\nPostProcess:\n  name: CTCLabelDecode\n  character_dict:\n  - '!'\n  - a\n  - 日\n",
+        );
+        let dictionary = RecDictionary::from_path(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert_eq!(dictionary.len(), 4);
+        assert_eq!(dictionary.token(0), Some("blank"));
+        assert_eq!(dictionary.token(1), Some("!"));
+        assert_eq!(dictionary.token(3), Some("日"));
+    }
+
+    #[test]
+    fn missing_character_dict_is_reported() {
+        let path = temp_yaml("PostProcess:\n  name: DBPostProcess\n  thresh: 0.3\n");
+        let error = RecDictionary::from_path(&path).unwrap_err();
+        fs::remove_file(&path).ok();
+        assert!(matches!(
+            error,
+            DictionaryError::MissingCharacterDict { .. }
+        ));
+    }
+
+    #[test]
+    fn space_char_is_appended_as_last_class() {
+        let dictionary = RecDictionary::from_tokens(["a", "b"])
+            .unwrap()
+            .with_space_char();
+        assert_eq!(dictionary.len(), 4);
+        assert_eq!(dictionary.token(3), Some(" "));
+        assert_eq!(dictionary.index_of(" "), Some(3));
+    }
+
+    #[test]
+    fn duplicate_tokens_keep_positional_indices() {
+        let dictionary = RecDictionary::from_tokens(["a", "b", "a"]).unwrap();
+        assert_eq!(dictionary.len(), 4);
+        assert_eq!(dictionary.token(3), Some("a"));
+        assert_eq!(dictionary.index_of("a"), Some(1));
+    }
+
+    #[test]
+    fn empty_token_list_is_rejected() {
+        assert!(RecDictionary::from_tokens(Vec::<String>::new()).is_none());
     }
 }

@@ -41,7 +41,8 @@ fn fixtures() -> Option<&'static FixturePaths> {
             let det_model = base.join("models/ppocrv5/det.onnx");
             let rec_model = base.join("models/ppocrv5/rec.onnx");
             let dictionary = base.join("models/ppocrv5/ppocrv5_dict.txt");
-            let image = base.join("images/demo.png");
+            // Downloaded by scripts/fetch_fixtures.sh.
+            let image = base.join("images/general_ocr_002.jpg");
 
             if det_model.exists() && rec_model.exists() && dictionary.exists() && image.exists() {
                 Some(FixturePaths {
@@ -78,6 +79,11 @@ fn ocr_pipeline_smoke_test() -> Result<(), OcrError> {
     assert!(
         !results.is_empty(),
         "expected OCR pipeline to detect at least one text region"
+    );
+    let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("BOARDING")),
+        "expected PP-OCRv5 to read the boarding pass header, got {texts:?}"
     );
 
     Ok(())

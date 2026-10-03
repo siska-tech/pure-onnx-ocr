@@ -1,19 +1,27 @@
 # アーキテクチャ設計書：Pure Rust OnnxOCR
 
 作成者: Shion Watanabe  
-日付: 2025-11-09  
+初版: 2025-11-09  
+改訂: 2026-10-03（v0.2.0：PP-OCRv6、PaddleOCR 3.x 互換、WebAssembly、マルチスレッド）  
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 ## 🎯 目的
 
-  * **プログラム全体の構造（モジュール構成）を決定する。**
-    システムは、推論の核となる `OcrEngine` を中心に配置し、その周囲に「検出パイプライン」と「認識パイプライン」を独立したモジュールとして配置する。各パイプラインは、さらに「前処理」「後処理」のサブモジュールに分割される。
+  * **プログラム全体の構造（モジュール構成）を示す。**
+    推論の中心は `OcrEngine` である。その周囲に、次のパイプラインを独立したモジュールとして配置する。
+    * 検出: 前処理 → 推論 → 後処理
+    * 認識: 切り出し → 前処理 → 推論 → CTC デコード
+    * 任意の方向分類: ページの向き・行の上下
 
   * **主要なモジュール間の役割分担と依存関係を明確にする。**
-    `OcrEngine` が全体の制御フロー（オーケストレーション）を担当する。`DetectionModule` は画像からポリゴン（座標）を生成する責務を持ち、`RecognitionModule` はポリゴンと元画像からテキストを生成する責務を持つ。モジュールは互いに疎結合であり、例えば `DetectionModule` は `RecognitionModule` の存在を知る必要はない。
+    * `OcrEngine` は、パイプライン全体の流れを制御する。
+    * 検出パイプラインは、画像からテキスト領域（4 点の矩形）を求める。
+    * 認識パイプラインは、切り出した画像からテキストを求める。
+    * ONNX の読み込み、`inference.yml` の解釈、画像のリサンプリング、スレッドプールは、それぞれ専用のモジュールに分離する。
 
   * **採用する設計原則やデザインパターンを定義する。**
-    「関心の分離 (Separation of Concerns)」を最重要の原則とする。特に、ONNXモデルの推論、画像処理、ジオメトリ計算、CTCデコードなど、専門性の高い領域を明確にモジュール化する。外部APIとしては「Facade パターン」を採用し、`OcrEngine` が内部の複雑な処理をカプセル化し、利用者にシンプルなインターフェースを提供する。
+    * 関心の分離と、Facade パターン（`OcrEngine`）、Builder パターン（`OcrEngineBuilder`）を採用する。
+    * 前処理と後処理は、PaddleOCR 3.x（PaddleX）の参照実装と**同じ結果になること**を設計方針とし、それを `tests/paddle_parity.rs` で検証する。
 
 -----
 
@@ -21,97 +29,87 @@
 
 ### 1\. システム構成図（コンポーネント図）
 
-プログラムは、以下の主要モジュールによって構成されます。
-
 ``` mermaid
 flowchart TD
-    %% --- 利用者層 ---
-    A["利用者 (Application)"] --> B["Public API (Facade)<br>OcrEngine<br><br>- det_model: TractModel<br>- rec_model: TractModel<br>- dictionary: Vec<String><br>- config: OcrConfig<br><br>+ new(...) -> Self<br>+ run(image_path) -> Vec<OcrResult>"]
+    A["利用者 (Rust / JavaScript)"] --> B["OcrEngineBuilder<br>モデル・設定・辞書を<br>パス / ディレクトリ / バイト列で受け取る"]
+    W["bindings/wasm<br>(wasm-bindgen)"] --> B
+    B --> C["OcrEngine (Facade, Send + Sync)<br>run_from_path / run_from_image / run_from_bytes"]
 
-    %% --- 検出と認識の分岐 ---
-    B --> C1["テキスト領域検出<br>責務: 画像からテキスト領域(ポリゴン)を発見"]
-    B --> C2["文字認識<br>責務: 画像領域からテキストを解読"]
+    C --> O1["ページの向き分類 (任意)<br>orientation::OrientationClassifier"]
+    O1 --> D["検出パイプライン"]
+    C --> D
+    D --> D1["DetPreProcessor<br>32 の倍数に引き伸ばし (imgproc)<br>BGR + ImageNet 正規化"]
+    D1 --> D2["DetInferenceSession<br>(tract, 推論計画の LRU キャッシュ)"]
+    D2 --> D3["DetPostProcessor::db_boxes<br>二値化 → 輪郭 → 最小面積矩形<br>→ 平均スコア → unclip → 矩形"]
 
-    %% --- 前処理ステージ ---
-    C1 --> D1[画像前処理<br>- image::resize<br>- ndarray::permuted_axes]
-    C2 --> D2["画像前処理<br>- image::crop<br>- image::resize_exact<br>- ndarray::stack (Batching)"]
+    D3 --> R0["crop::crop_quad<br>透視変換で切り出し、縦長は 90° 回転"]
+    R0 --> O2["行の上下分類 (任意)"]
+    O2 --> R["認識パイプライン"]
+    R0 --> R
+    R --> R1["RecPreProcessor<br>高さ 48、可変幅、BGR、(x/255-0.5)/0.5"]
+    R1 --> R2["RecInferenceSession<br>(バッチを rayon で並列実行)"]
+    R2 --> R3["RecPostProcessor<br>CTC greedy デコード + 辞書"]
 
-    %% --- 推論ステージ ---
-    D1 --> E1["Inference Module<br>(det.onnx)<br>- tract_onnx::run()"]
-    D2 --> E2["Inference Module<br>(rec.onnx)<br>- tract_onnx::run()"]
-
-    %% --- 後処理ステージ ---
-    E1 --> F1[後処理<br>- imageproc::contours<br>- i_overlay::buffering<br>- geo_types::Polygon]
-    E2 --> F2[後処理<br>- ndarray::argmax_axis<br>- Custom CTC Greedy Decode<br>- Dictionary Lookup]
+    Y["paddle_config<br>inference.yml の読み込み"] -.-> B
+    T["threading<br>rayon プール / tract 実行器"] -.-> D2
+    T -.-> R2
 ```
 
 ### 2\. モジュール間の関係
 
 #### 2.1. データフロー
 
-全体のデータフローは、`OcrEngine::run()` メソッドの呼び出しを起点とします。
+1.  **入力**: 利用者は、パス・`DynamicImage`・エンコード済み画像のバイト列のいずれかを渡す。
+2.  **ページの向き（任意）**: `OrientationClassifier` が 0/90/180/270 度を判定し、画像を正立させる。結果の座標は、最後に元の画像の座標系へ戻す。
+3.  **検出**:
+    1.  `DetPreProcessor` が、長辺の上限（既定 960）または短辺の下限（PaddleOCR と同じ設定）に従って倍率を決める。
+    2.  各辺を最も近い 32 の倍数に**引き伸ばし**、OpenCV 互換の bilinear でリサイズする。
+    3.  BGR の順に並べ、ImageNet の平均・標準偏差で正規化し、NCHW のテンソルにする。
+    4.  `DetInferenceSession` が DBNet を実行し、確率マップ `[H, W]` を得る。
+    5.  `DetPostProcessor::db_boxes` が、PaddleOCR の `DBPostProcess` と同じ手順で、4 点の矩形とスコアを求める。
+    6.  矩形の座標を、縦横それぞれの倍率で元の画像の座標に戻す。
+4.  **切り出し**: `crop_quad` が矩形を透視変換（bicubic）で切り出す。高さ ÷ 幅 ≥ 1.5 の領域は縦書きとみなし、反時計回りに 90 度回転する。
+5.  **行の上下（任意）**: 上下逆と判定された切り出しを 180 度回転する。
+6.  **認識**:
+    1.  切り出した画像を縦横比でソートし、`rec_batch_size`（既定 1）ごとのバッチに分ける。
+    2.  バッチごとに、高さ 48 の可変幅へリサイズ・正規化する。
+    3.  推論・デコードを、スレッドプールで並列に実行する。
+7.  **出力**: `Vec<OcrResult { text, confidence, bounding_box }>` を返す。`run_with_metrics_*` の場合は、各ステージの所要時間とページの角度も返す。
 
-1.  **入力:** 利用者が `OcrEngine::run()` に画像パス（`&str`）を提供します。
-2.  **画像ロード:** `image` クレートが画像を `DynamicImage` としてロードします。
-3.  **検出 (Detection):**
-    a.  `DetPreProcessor` が `DynamicImage` を受け取り、リサイズ（アスペクト比維持）、正規化、NCHW形式への軸転置 [1, 2, 3] を行い、`tract::Tensor`（検出用入力）を生成します。
-    b.  `Inference Module` が `det.onnx` を実行し、`tract::Tensor`（確率マップ）を出力します。
-    c.  `DetPostProcessor` が確率マップを受け取り、`imageproc::contours` [4, 5] で輪郭を抽出し、`i_overlay::buffering` [6] でポリゴンを拡大（オフセット）し、`Vec<geo_types::Polygon>` [7] を生成します。
-4.  **認識 (Recognition):**
-    a.  `RecPreProcessor` が `Vec<Polygon>` と元の `DynamicImage` を受け取ります。
-    b.  ポリゴン毎に画像をクロップし、固定サイズ（例：\`\` [8, 9]）に強制リサイズ [10] し、正規化します。
-    c.  `ndarray::stack` [11] を使い、複数のクロップ画像を単一のバッチ \`tract::Tensor\`（認識用入力）にまとめます。
-    d.  \`Inference Module\` が \`rec.onnx\` を実行し、\`tract::Tensor\`（クラスロジット）を出力します。
-    e.  \`RecPostProcessor\` がロジットを受け取り、\`ndarray::argmax\_axis\` [12] で各タイムステップの最大インデックスを取得します。
-    f.  Pure Rustで実装されたCTC Greedyデコードロジック [13, 14]（重複とブランクID [15, 16] の削除）を実行します。
-    g.  \`OcrEngine\` が保持する辞書（\`Vec\<String\>\`）でインデックスを \`String\` にマッピングします。
-5.  **出力:** `DetPostProcessor` からの `Vec<Polygon>` と `RecPostProcessor` からの `Vec<String>` を集約し、最終的な `Vec<OcrResult>` [17] を利用者に返します。
+#### 2.2. 処理シーケンス（主要ユースケース: `OcrEngine::run_from_path`）
 
-#### 2.2. 処理シーケンス（主要ユースケース: `OcrEngine::run`）
-
-`OcrEngine::run` が呼び出された際の、モジュール間の主要なインタラクションは以下の通りです。
-
-1.  `App -> OcrEngine.run(path)`
-2.  `OcrEngine -> image::open(path)`
-3.  `OcrEngine -> DetPreProcessor.process(image, config.det_limit_side_len)`
-4.  `OcrEngine -> InferenceModule(det_model).run(det_input)`
-5.  `OcrEngine -> DetPostProcessor.process(det_output, config.det_unclip_ratio)`
-6.  `OcrEngine -> RecPreProcessor.process(image, polygons, config.rec_image_shape)`
-7.  `OcrEngine -> InferenceModule(rec_model).run(rec_batch)`
-8.  `OcrEngine -> RecPostProcessor.decode(rec_output, engine.dictionary, engine.blank_id)`
-9.  `OcrEngine -> App.return(Vec<OcrResult>)`
-
-*注：* 複数のテキスト領域が検出された場合、ステップ 6〜8 はバッチ処理（または `rayon` [11] による並列イテレーション）として実行されます。
+1.  `App -> OcrEngineBuilder.det_model_dir(..).rec_model_dir(..).build()`
+    * `inference.yml` を解釈し、ONNX を読み込む（中間テンソルの形状情報 `value_info` は破棄する）。
+    * 辞書を作り、スレッドプールを生成する。
+2.  `App -> OcrEngine.run_from_path(path)`
+3.  `OcrEngine -> image::open` で画像を読み込む。
+4.  ページの向き分類（任意）
+5.  `DetectionPipeline`: 前処理 → 推論（形状ごとの推論計画をキャッシュ）→ `db_boxes` → 座標の変換
+6.  `crop_regions` で切り出し、必要なら行の上下分類を行う。
+7.  `RecognitionPipeline`: 前処理・推論・デコードの各ステージを、バッチ単位で並列に処理する。
+8.  `OcrEngine -> App`: `Vec<OcrResult>` を返す。
 
 ### 3\. 設計原則・デザインパターン
 
-  * **設計原則: 関心の分離 (Separation of Concerns)**
-    本アーキテクチャの核心原則です。「Pure Rust」要件に基づき、C++ライブラリが担っていた各責務を、対応するPure Rustクレートに置き換えます。
-
-      * **推論:** `onnxruntime` [18] -\> `tract-onnx` [18]
-      * **画像処理:** `opencv-python` [19] -\> `image` + `imageproc` [20]
-      * **ジオメトリ:** `pyclipper` [21], `shapely` [22] -\> `i_overlay` [6], `geo-types` [23]
-      * **N次元配列:** `numpy` [24] -\> `ndarray` [25]
-
-  * **設計原則: カプセル化 (Encapsulation)**
-    `OcrEngine` 構造体が、OCRパイプラインのすべての複雑な状態（ロードされたモデル、辞書、設定）とロジック（前処理、後処理の呼び出し）をカプセル化します。利用者は `run()` を呼び出すだけでよく、内部の2段階プロセス（検出と認識）を意識する必要はありません。
-
-  * **デザインパターン: Facade パターン**
-    `OcrEngine` は、`DetPreProcessor`, `DetPostProcessor`, `RecPreProcessor`, `RecPostProcessor`, `InferenceModule` という多数のサブシステムに対する統一された高レベルインターフェース（Facade）として機能します。
-
-  * **デザインパターン: Builder パターン（推奨）**
-    `OcrEngine` の初期化は、検出モデルパス、認識モデルパス、辞書パス、各種設定（`OcrConfig`）など、多くのパラメータを必要とします。将来的な拡張性を考慮し、`OcrEngineBuilder` を実装して、安全かつ柔軟なインスタンス構築を可能にすることを推奨します。
+  * **関心の分離**: C/C++ のライブラリが担っていた役割を、Pure Rust のクレートと自前のモジュールで置き換える（4 章を参照）。
+  * **カプセル化**: `OcrEngine` は、モデル・辞書・設定・スレッドプール・推論計画のキャッシュをすべて内部に持つ。利用者は `run_*` を呼ぶだけでよい。
+  * **Facade パターン**: `OcrEngine` が、各パイプラインに対する単一の窓口になる。
+  * **Builder パターン**: `OcrEngineBuilder` で設定する。入力元（パス、PaddleOCR のモデルディレクトリ、バイト列）と、各種パラメータを組み合わせられる。
+  * **PaddleOCR との一致**: 前処理と後処理は、PaddleX の実装に合わせる。実装の違いによる結果の差は、`tests/reference/*.json`（PaddleOCR 3.7 の出力）との比較テストで検出する。
+  * **スレッド安全性**: 推論計画のキャッシュは `Mutex` で守り、`OcrEngine` を `Send + Sync` にしている。並列実行するバッチの中では、tract をシングルスレッドで動かす。tract の作業領域はスレッドごとに `RefCell` で持たれており、入れ子の並列化でワーカーが別の仕事を割り込ませると二重借用で panic するためである。
 
 ### 4\. 技術選定
 
-要件定義書の「Pure Rust」制約に基づき、C/C++ FFIに依存するライブラリを排除し、以下のPure Rustクレートを選定します。
-
-| カテゴリ           | 選定クレート      | 選定理由（Pure Rust代替）                                                                                                                    |
-| :----------------- | :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------- |
-| **ONNX推論**       | `tract-onnx` [26] | `onnxruntime-rs` [27, 18] のPure Rust代替。C++ランタイムへの依存を排除する [18] ための**必須**の選択。                                       |
-| **N次元配列**      | `ndarray` [28]    | `numpy` [25, 24] のPure Rust代替。テンソルの正規化、軸転置（HWC-\>NCHW）[1, 3]、`argmax` [12] 処理に使用。                                   |
-| **画像I/O・処理**  | `image` [29]      | `opencv-python` [20, 19] のPure Rust代替。`imread`, `resize` (`resize_exact`) [10], `crop` に使用。                                          |
-| **輪郭検出**       | `imageproc` [30]  | `cv2.findContours` [31, 32, 33] のPure Rust代替 [4, 5]。DBNet後処理の核となる輪郭抽出に使用。                                                |
-| **ポリゴン処理**   | `i_overlay` [6]   | `pyclipper` [34, 21, 35]（C++ラッパー）のPure Rust代替 [36, 37]。DBNet後処理のポリゴン拡大（Buffering）[6] に使用。                          |
-| **ジオメトリ表現** | `geo-types` [23]  | `shapely` [22]（GEOS C APIラッパー）のPure Rust代替 [38, 39]。ポリゴンや座標の標準的なデータ構造として使用 [7]。                             |
-| **並列処理**       | `rayon` [11]      | （オプション）認識パイプライン（`RecPreProcessor` -\> `RecPostProcessor`）をテキスト領域ごとに並列化し、スループットを向上させるために使用。 |
+| カテゴリ | 選定 | 理由・備考 |
+| :--- | :--- | :--- |
+| ONNX 推論 | `tract-onnx` 0.23 | Pure Rust の推論エンジン。0.20 では PP-OCRv6 medium の認識モデルを実行できない |
+| 並列処理 | `rayon` + `tract-linalg/multithread-mm` | 認識バッチの並列化（既定は最大 8 スレッド）。機能 `multithread` で切り替える |
+| N 次元配列 | `ndarray` 0.17 | tract と同じ版 |
+| 画像の入出力 | `image` | デコードと切り抜き |
+| リサンプリング | 自前の `imgproc` | `cv2.resize(INTER_LINEAR)` と同じ結果にするため |
+| 輪郭検出・透視変換 | `imageproc` | `cv2.findContours` と `cv2.warpPerspective` の代替 |
+| ポリゴンの膨張 | `i_overlay` | `pyclipper` の代替（角は丸め） |
+| ジオメトリ | `geo-types` | `OcrResult::bounding_box` の型 |
+| YAML | 自前の `paddle_config` | PyYAML が出力する範囲だけに対応し、依存を増やさない |
+| ログ | `log` | 実際の出力先は、利用者側のロガーに任せる |
+| WebAssembly | `wasm-bindgen`（`bindings/wasm`）、`web-time`、`getrandom/wasm_js` | ブラウザ対応。SIMD128 を有効にする |

@@ -1,9 +1,9 @@
 ---
-status: progress
+status: completed
 priority: high
 assignee: Backend
 start_date: 2025-11-10
-end_date:
+end_date: 2026-10-03
 tags: [quality, investigation, ocr-smoke]
 depends_on: task-fix-000
 ---
@@ -47,3 +47,29 @@ depends_on: task-fix-000
   - `sample2.jpg`: `` (空文字列), `25.06.09-Y`
 - 現状の `Confidence` 表示はすべて `0.000` のまま。ロジット差分に対して素朴な `1 / Σexp(...)` を平均している暫定実装で、Softmax 正規化を行っていないため有効値になっていない。信頼度評価は別タスクで要改善。
 
+
+## 再評価とクローズ (2026-10-03)
+
+PP-OCRv6 対応（`docs/devlog/ppocrv6/`）の調査で、PaddleOCR 3.x の参照実装と前処理・後処理を比較した。その結果、ノイズの主因は次の 3 点と判明し、すべて修正した。
+
+| 原因 | 症状 | 修正 |
+| :--- | :--- | :--- |
+| 検出入力が RGB で、`x/255` のみ。BGR と ImageNet 正規化が欠けていた | 確率マップが劣化し、`ccaa` のようなノイズ領域が出る | `task-v6-003`。BGR と ImageNet 正規化に加え、`box_thresh` と外側輪郭のみの抽出を導入 |
+| 辞書の末尾に space クラスがなかった（PaddleOCR の `use_space_char=True` 相当） | 空白が `[UNK]` になる | `task-v6-002`。`RecDictionary::with_space_char` |
+| 認識入力の幅を 320 に固定していた | 長い行が押し潰されて読めない | `task-v6-003`。幅を `max(320, 48 x 縦横比)`、上限 3200 の可変にした |
+
+事前調査ログにある「6,625 クラスと 18,383 語の不一致」は、Hugging Face 配布の PP-OCRv5 mobile では発生しない。出力クラス数は 18,385 で、`ppocrv5_dict.txt` の 18,383 語に blank と space を足した数と一致する。
+
+再評価の条件と結果は次のとおり。
+- 画像は `demo.png` が手元にないため、PaddleX のデモ画像 `general_ocr_002.jpg`（搭乗券）を使った。
+- モデルは PP-OCRv5 mobile。
+- 実行コマンドは `ocr_smoke`。
+
+| 項目 | 修正前 | 修正後 |
+| :--- | :--- | :--- |
+| ノイズ領域 | `ccaa` / `cYaaaananacl` / `caaa` / `ca` と空文字列で計 8 件 | 0 件 |
+| 空白 | `序号[UNK]SERIAL[UNK]NO.` | `序号 SERIAL NO.` |
+| 末尾の長い行 | 欠落 | `登机口于起飞前10分钟关闭 GATES CLOSE10MINUTES BEFORE DEPARTURE TIME` |
+| 誤読の例 | `03DG`, `GATe`, `Am`, `ARE` | `03DEC`, `GATE`, `NAME`, `FARE` |
+
+詳細は `docs/devlog/ppocrv6/task-v6-005-validation.md` を参照。本タスクはクローズとする。

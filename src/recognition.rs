@@ -2,14 +2,16 @@ use crate::ctc::{
     CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence,
 };
 use crate::dictionary::RecDictionary;
+use crate::onnx_model::PlanCache;
 use crate::preprocessing::PreprocessedRecBatch;
+
+/// Default number of compiled recognition plans (one per batch size and width) kept in memory.
+pub const DEFAULT_REC_PLAN_CACHE: usize = 16;
 use ndarray::Array3;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tract_onnx::prelude::*;
-use tract_onnx::tract_core::anyhow::anyhow;
+use tract_onnx::tract_core::internal::anyhow;
 
 /// Result of running SVTR recognition inference.
 #[derive(Debug, Clone)]
@@ -22,43 +24,109 @@ pub struct RecInferenceOutput {
 #[derive(Debug)]
 pub struct RecInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(usize, u32), Arc<TypedRunnableModel<TypedModel>>>>,
+    input_height: u32,
+    cache: std::sync::Mutex<PlanCache<(usize, u32)>>,
+    executor: crate::threading::Executor,
 }
 
 impl RecInferenceSession {
+    /// Loads a recognition model expecting 48-pixel high inputs (PP-OCRv3 and later).
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
+        Self::load_with_input_height(model_path, 48)
+    }
+
+    /// Loads a recognition model with an explicit input height
+    /// (PaddleOCR `RecResizeImg.image_shape[1]`).
+    pub fn load_with_input_height(
+        model_path: impl AsRef<Path>,
+        input_height: u32,
+    ) -> TractResult<Self> {
         let model_path = model_path.as_ref();
-        println!("[RecInfer] Loading recognition model from {:?}", model_path);
+        if input_height == 0 {
+            return Err(anyhow!("recognition input height must be positive"));
+        }
+        log::info!("[RecInfer] Loading recognition model from {:?}", model_path);
+        Self::from_model(
+            crate::onnx_model::load_paddle_onnx(model_path)?,
+            input_height,
+        )
+    }
 
-        let mut inference_model = tract_onnx::onnx()
-            .with_ignore_output_shapes(true)
-            .model_for_path(model_path)?;
+    /// Loads a recognition model from ONNX bytes held in memory.
+    pub fn from_bytes_with_input_height(
+        model_bytes: &[u8],
+        input_height: u32,
+    ) -> TractResult<Self> {
+        if input_height == 0 {
+            return Err(anyhow!("recognition input height must be positive"));
+        }
+        log::info!(
+            "[RecInfer] Loading recognition model from memory ({} bytes)",
+            model_bytes.len()
+        );
+        Self::from_model(
+            crate::onnx_model::load_paddle_onnx_from_bytes(model_bytes)?,
+            input_height,
+        )
+    }
 
-        let batch = inference_model.symbol_table.sym("batch");
-        let width = inference_model.symbol_table.sym("width");
+    fn from_model(mut inference_model: InferenceModel, input_height: u32) -> TractResult<Self> {
+        let batch = inference_model.symbols.sym("batch");
+        let width = inference_model.symbols.sym("width");
         inference_model.set_input_fact(
             0,
             InferenceFact::dt_shape(
                 f32::datum_type(),
-                tvec![batch.into(), TDim::from(3), TDim::from(48), width.into()],
+                tvec![
+                    batch.into(),
+                    TDim::from(3),
+                    TDim::from(input_height as i64),
+                    width.into()
+                ],
             ),
         )?;
 
-        println!("[RecInfer] Recognition model prepared");
+        log::debug!("[RecInfer] Recognition model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: RefCell::new(HashMap::new()),
+            input_height,
+            cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_REC_PLAN_CACHE)),
+            executor: crate::threading::Executor::SingleThread,
         })
     }
 
+    /// Returns the input height this session was prepared for.
+    pub fn input_height(&self) -> u32 {
+        self.input_height
+    }
+
     pub fn run(&self, batch: &PreprocessedRecBatch) -> TractResult<RecInferenceOutput> {
+        self.run_on(batch, &self.executor)
+    }
+
+    /// Runs one batch single-threaded. Used when several batches already run
+    /// in parallel: nesting tract's parallel matrix multiplication inside
+    /// another rayon job lets a worker steal a second batch while the first
+    /// holds tract's thread-local scratch space, which panics with
+    /// "RefCell already borrowed".
+    pub(crate) fn run_single_threaded(
+        &self,
+        batch: &PreprocessedRecBatch,
+    ) -> TractResult<RecInferenceOutput> {
+        self.run_on(batch, &crate::threading::Executor::SingleThread)
+    }
+
+    fn run_on(
+        &self,
+        batch: &PreprocessedRecBatch,
+        executor: &crate::threading::Executor,
+    ) -> TractResult<RecInferenceOutput> {
         let tensor_shape = batch.tensor.shape();
         if tensor_shape.len() != 4 {
             return Err(anyhow!(
                 "expected recognition input tensor to have 4 dimensions, got {:?}",
                 tensor_shape
-            )
-            .into());
+            ));
         }
 
         let batch_size = tensor_shape[0];
@@ -66,33 +134,39 @@ impl RecInferenceSession {
         let height = tensor_shape[2];
         let width = tensor_shape[3];
 
-        println!(
+        log::debug!(
             "[RecInfer] Running inference with input shape {:?}",
             tensor_shape
         );
 
-        if channel != 3 || height != 48 {
+        if channel != 3 || height != self.input_height as usize {
             return Err(anyhow!(
-                "expected recognition input to have shape [*, 3, 48, *], got {:?}",
+                "expected recognition input to have shape [*, 3, {}, *], got {:?}",
+                self.input_height,
                 tensor_shape
-            )
-            .into());
+            ));
         }
 
         let plan = self.runnable_for_dims(batch_size, width as u32)?;
-        let outputs = plan.run(tvec!(batch.tensor.clone().into()))?;
+        let run_start = crate::time::Instant::now();
+        let outputs =
+            crate::threading::run_with(executor, || plan.run(tvec!(batch.tensor.clone().into())))?;
+        log::debug!(
+            "[RecInfer] Ran batch {:?} in {:?}",
+            tensor_shape,
+            run_start.elapsed()
+        );
         let output_tensor = outputs
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("SVTR model did not return any outputs"))?;
 
-        let view = output_tensor.to_array_view::<f32>()?;
+        let view = output_tensor.to_plain_array_view::<f32>()?;
         if view.ndim() != 3 {
             return Err(anyhow!(
                 "expected recognition output to have 3 dimensions, got {:?}",
                 view.shape()
-            )
-            .into());
+            ));
         }
 
         let logits = view.into_dimensionality::<ndarray::Ix3>()?.to_owned();
@@ -102,8 +176,7 @@ impl RecInferenceSession {
                 "batch dimension mismatch between input ({}) and output ({})",
                 batch_size,
                 logit_batch
-            )
-            .into());
+            ));
         }
 
         let max_width = batch.max_width as f32;
@@ -137,18 +210,41 @@ impl RecInferenceSession {
         })
     }
 
+    /// Runs inference on a pool of `threads` worker threads (`1` runs
+    /// single-threaded). Has no effect without the `multithread` feature or
+    /// on WebAssembly.
+    pub fn set_inference_threads(&mut self, threads: usize) {
+        self.executor = crate::threading::executor_for(threads);
+    }
+
+    pub(crate) fn set_executor(&mut self, executor: crate::threading::Executor) {
+        self.executor = executor;
+    }
+
+    /// Sets how many compiled plans (one per input shape) are kept in memory.
+    /// The least recently used plan is dropped when the limit is exceeded.
+    pub fn set_plan_cache_capacity(&self, capacity: usize) {
+        crate::onnx_model::lock_cache(&self.cache).set_capacity(capacity);
+    }
+
+    /// Returns the number of compiled plans currently cached.
+    pub fn cached_plan_count(&self) -> usize {
+        crate::onnx_model::lock_cache(&self.cache).len()
+    }
+
     fn runnable_for_dims(
         &self,
         batch_size: usize,
         width: u32,
-    ) -> TractResult<Arc<TypedRunnableModel<TypedModel>>> {
-        if let Some(plan) = self.cache.borrow().get(&(batch_size, width)) {
-            return Ok(Arc::clone(plan));
+    ) -> TractResult<Arc<TypedRunnableModel>> {
+        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get((batch_size, width)) {
+            return Ok(plan);
         }
 
-        println!(
+        log::debug!(
             "[RecInfer] Preparing runnable model for batch {} width {}",
-            batch_size, width
+            batch_size,
+            width
         );
 
         let mut model = self.base_model.clone();
@@ -159,22 +255,21 @@ impl RecInferenceSession {
                 tvec![
                     TDim::from(batch_size as i64),
                     TDim::from(3),
-                    TDim::from(48),
+                    TDim::from(self.input_height as i64),
                     TDim::from(width as i64)
                 ],
             ),
         )?;
 
+        let compile_start = crate::time::Instant::now();
         let plan = model
             .into_typed()?
             .into_decluttered()?
             .into_optimized()?
             .into_runnable()?;
+        log::debug!("[RecInfer] Compiled plan in {:?}", compile_start.elapsed());
 
-        let plan = Arc::new(plan);
-        self.cache
-            .borrow_mut()
-            .insert((batch_size, width), Arc::clone(&plan));
+        crate::onnx_model::lock_cache(&self.cache).insert((batch_size, width), Arc::clone(&plan));
 
         Ok(plan)
     }

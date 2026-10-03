@@ -1,10 +1,11 @@
 # `pure-onnx-ocr` (Pure Rust OnnxOCR)
 
 作成者: Shion Watanabe  
-日付: 2025-11-09  
+初版: 2025-11-09  
+改訂: 2026-10-03（v0.2.0）  
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
-Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR由来の `det.onnx` (DBNet) と `rec.onnx` (SVTR_HGNet) を Pure Rust エコシステムのみで実行できるよう再設計しています。
+Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
 
 > **English documentation is available in `README_en.md`.**  
 > Other architectural documents also provide English counterparts (see [Documentation](#documentation)).
@@ -12,17 +13,18 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 ## 特長
 
 - **Pure Rustのみで完結**: C/C++製オンプレミスライブラリやFFIの導入が不要です。`cargo build` だけでセットアップできます。
-- **DBNet + SVTR パイプライン**: PaddleOCRが採用する検出・認識モデルをRust上で再現します。
+- **DBNet + CTC 認識パイプライン**: PaddleOCR が採用する検出・認識モデルを Rust 上で再現します。前処理 (BGR・ImageNet 正規化・可変幅認識) と後処理 (`box_thresh`・空白クラス) は PaddleOCR 3.x に合わせています。
+- **PaddleOCR 3.x のモデルディレクトリをそのまま利用可能**: `inference.onnx` と `inference.yml` が入ったディレクトリを指定すると、前処理の設定と辞書を `inference.yml` から読み込みます。
 - **モジュール構成が明確**: `OcrEngineBuilder` と `OcrEngine` を中心に、前処理・推論・後処理を分離しています。
-- **移植性**: 組み込み環境、サーバーレス、WASMなど、C++依存が課題となる環境でも動作を想定しています。
+- **移植性**: 組み込み環境やサーバーレスなど、C++ への依存が問題になる環境でも動きます。**ブラウザ（`wasm32-unknown-unknown`）と WASI で動作を確認済みです**（[WebAssembly](#webassembly) を参照）。
 
 ## 導入手順
 
 ### 1. 前提条件
 
-- Rust 1.75 以降 (stable)
+- Rust 1.91 以降 (stable。依存する `tract-onnx` 0.23 の要件)
 - CPU推論を想定した x86\_64 / aarch64 環境
-- ONNXモデルファイル (`det.onnx`, `rec.onnx`) と辞書ファイル (`ppocrv5_dict.txt`)
+- PaddleOCR の ONNX モデル (PP-OCRv6 推奨。PP-OCRv5 も利用可)
 
 ### 2. 依存関係の追加
 
@@ -30,21 +32,58 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.1.0"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.2.0"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
 
-### 3. モデルと辞書の配置
+### 3. モデルの配置
 
-1. PaddleOCR配布の `PP-OCRv5_Server-ONNX` もしくは `PP-OCRv5_Mobile-ONNX` をダウンロードします。
-2. 本プロジェクトの `models/` ディレクトリなど、任意の場所に以下のファイルを配置してください。
-   - `models/ppocrv5/det.onnx`
-   - `models/ppocrv5/rec.onnx`
-   - `models/ppocrv5/ppocrv5_dict.txt`
-3. `OcrEngineBuilder` へ上記パスを渡すことで推論が可能になります。
+#### PP-OCRv6 (推奨)
+
+Hugging Face の `PaddlePaddle/PP-OCRv6_{tiny,small,medium}_{det,rec}_onnx` からモデルを取得します。各リポジトリの `inference.onnx` と `inference.yml` を、同じディレクトリに配置してください。辞書は `inference.yml` に含まれているため、別途用意する必要はありません。
+
+```bash
+for kind in det rec; do
+  mkdir -p models/ppocrv6/small_${kind}
+  for f in inference.onnx inference.yml; do
+    curl -L -o models/ppocrv6/small_${kind}/${f} \
+      https://huggingface.co/PaddlePaddle/PP-OCRv6_small_${kind}_onnx/resolve/main/${f}
+  done
+done
+```
+
+| 階層 | 特徴 | CPU 推論時間の目安 (896x528 の画像 1 枚、Core i7-1360P・8 スレッド) |
+| :--- | :--- | :--- |
+| `tiny` | 最軽量。辞書は 6,904 文字で、**ひらがな・カタカナを含まないため日本語には不向き** | 約 0.5 秒 |
+| `small` | 50 言語 (日本語を含む)。精度と速度のバランスが良い | 約 1.3 秒 |
+| `medium` | 50 言語。最高精度 (PaddleOCR 3.x の既定) | 約 4.5 秒 |
+
+#### PP-OCRv5
+
+従来どおり、`det.onnx`、`rec.onnx`、`ppocrv5_dict.txt` を個別に指定できます。Hugging Face の `PaddlePaddle/PP-OCRv5_{mobile,server}_{det,rec}_onnx` のようにディレクトリ単位で配布されているモデルは、PP-OCRv6 と同じ方法で指定できます。
 
 ## クイックスタート
+
+PP-OCRv6 のモデルディレクトリを使う例:
+
+```rust
+use pure_onnx_ocr::{OcrEngineBuilder, OcrError};
+
+fn main() -> Result<(), OcrError> {
+    let engine = OcrEngineBuilder::new()
+        .det_model_dir("models/ppocrv6/small_det") // inference.onnx + inference.yml
+        .rec_model_dir("models/ppocrv6/small_rec") // 辞書は inference.yml から読み込む
+        .build()?;
+
+    for result in engine.run_from_path("examples/demo.jpg")? {
+        println!("{} ({:.3})", result.text, result.confidence);
+    }
+    Ok(())
+}
+```
+
+ファイルを個別に指定する例 (PP-OCRv5 のテキスト辞書):
 
 ```rust
 use pure_onnx_ocr::{OcrEngineBuilder, OcrError, OcrResult};
@@ -57,7 +96,9 @@ fn main() -> Result<(), OcrError> {
         .dictionary_path("models/ppocrv5/ppocrv5_dict.txt")
         .det_limit_side_len(960)   // 任意調整: 入力画像の最大長辺
         .det_unclip_ratio(1.5)     // 任意調整: 検出ポリゴンのオフセット率
-        .rec_batch_size(8)         // 任意調整: 認識推論のバッチサイズ
+        .rec_batch_size(1)         // 任意調整: 認識推論のバッチサイズ（既定 1 が最速）
+        .inference_threads(8)      // 任意調整: 推論スレッド数（既定は論理 CPU 数、最大 8）
+        .det_box_threshold(0.6)    // 任意調整: 検出領域の平均スコア下限 (PaddleOCR の box_thresh)
         .build()?;
 
     // 2. 画像ファイルからOCRを実行
@@ -90,34 +131,115 @@ cargo run --bin ocr_smoke -- path/to/image.jpg \
   --dictionary models/ppocrv5/ppocrv5_dict.txt \
   --det-limit-side-len 960 \
   --det-unclip-ratio 1.5 \
-  --rec-batch-size 8
+  --rec-batch-size 1 \
+  --threads 8
 ```
 
-ベンチマーク用途では `--benchmark` フラグを付与します。総時間・画像デコード・DBNet / SVTR の各ステージ（前処理・推論・後処理）が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
+PP-OCRv6 のモデルディレクトリを使う場合は、次のように指定します。
 
 ```bash
-cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
+cargo run --release --bin ocr_smoke -- path/to/image.jpg \
+  --det-model-dir models/ppocrv6/small_det \
+  --rec-model-dir models/ppocrv6/small_rec
 
-[INFO] benchmark.image=tests/fixtures/images/demo.png
-[INFO] benchmark.total_seconds=0.412583
-[INFO] benchmark.image_decode_seconds=0.003121
-[INFO] benchmark.det.preprocess_seconds=0.044512
-[INFO] benchmark.det.inference_seconds=0.221009
-[INFO] benchmark.det.postprocess_seconds=0.012334
-[INFO] benchmark.rec.preprocess_seconds=0.018775
-[INFO] benchmark.rec.inference_seconds=0.094281
-[INFO] benchmark.rec.postprocess_seconds=0.005237
+# しきい値を調整する例 (既定値は PaddleOCR 3.x パイプラインと同じ 0.3 / 0.6)
+cargo run --release --bin ocr_smoke -- path/to/image.jpg \
+  --det-model-dir models/ppocrv6/small_det \
+  --rec-model-dir models/ppocrv6/small_rec \
+  --det-thresh 0.3 --det-box-thresh 0.6
+```
+
+ベンチマーク用途では `--benchmark` フラグを付与します。総時間、画像デコード、方向分類、検出と認識の各ステージ（前処理・推論・後処理）の所要時間が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
+
+```bash
+cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg 
+  --det-model-dir tests/fixtures/models/ppocrv6/small_det 
+  --rec-model-dir tests/fixtures/models/ppocrv6/small_rec --benchmark
+
+# PP-OCRv6 small、Core i7-1360P・8 スレッド。1 回目の実行なので推論計画のコンパイル時間を含む
+[INFO] benchmark.image=tests/fixtures/images/general_ocr_002.jpg
+[INFO] benchmark.total_seconds=2.064020
+[INFO] benchmark.image_decode_seconds=0.004564
+[INFO] benchmark.orientation_seconds=0.000000
+[INFO] benchmark.det.preprocess_seconds=0.018218
+[INFO] benchmark.det.inference_seconds=0.952411
+[INFO] benchmark.det.postprocess_seconds=0.004526
+[INFO] benchmark.rec.preprocess_seconds=0.010476
+[INFO] benchmark.rec.inference_seconds=1.038929
+[INFO] benchmark.rec.postprocess_seconds=0.028048
 ```
 
 推論時間、検出されたテキストと信頼度、ポリゴン座標が標準出力に整形されます。入力画像やモデルが見つからない場合はエラーメッセージと共に終了します。
 
-内部では検出前処理が長辺リサイズ後に 32px 単位でゼロパディングを行い、DBNet の入力制約（32 の倍数）を満たすようになっています。
+内部では、検出前処理で次の順に処理しています。
 
-> **現在の制約:** `task-fix-001` ブランチで CTC 辞書の blank トークン整合性を是正し、SVTR 出力と辞書のインデックスが一致するようになりました。さらに `task-fix-002` で認識信頼度を「推論結果が確率分布であればその最大値を直接使用し、ロジットの場合は log-sum-exp を通じて Softmax 後の最大確率を算出し算術平均化する」方式へ刷新し、`ocr_smoke` の表示が 0.000 固定から実測レンジ (0.7-0.95 付近) に改善されています。評価用スモークテストの再測定は継続中で、詳細なベンチマークは続報で共有します。
+1. 長辺を指定サイズにリサイズする
+2. BGR 順で ImageNet 正規化する
+3. 32px 単位でパディングして、DBNet の入力制約（32 の倍数）を満たす
+
+認識前処理では、高さ 48px のまま縦横比を保ってリサイズします。行が長い場合は入力幅を最大 3200px まで広げ、縦横比でソートしたうえでバッチ化します。
+
+### PaddleOCR 3.x 相当のオプション
+
+| 機能 | ビルダー | `ocr_smoke` | 既定 |
+| :--- | :--- | :--- | :--- |
+| 回転補正つきの切り出し（縦長の領域は 90° 回転） | `rec_crop_mode(RecCropMode::Rotated)` | `--crop-mode rotated\|axis` | 有効 |
+| 原寸での検出（PaddleOCR 3.x と同じ条件） | `det_limit_type(DetLimitType::Min).det_limit_side_len(64)` | `--det-limit-type min --det-limit-side-len 64` | 長辺 960 に縮小 |
+| 検出 YAML のしきい値を使う | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | パイプラインの既定値 (0.3 / 0.6 / 1.5) |
+| ページの向き補正（0/90/180/270） | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | 無効 |
+| 行の上下補正（0/180） | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | 無効 |
+| 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 8）。WebAssembly では 1 |
+| 推論計画のキャッシュ上限 | `plan_cache_capacity(4, 16)` | なし | 検出 4 / 認識 16 |
+| 読み込み・推論ログ | `log` クレートで出力 | `-v` / `--verbose` | Warn 以上のみ |
+
+向きの分類器は、Hugging Face の `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` と `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx` から取得します。行の向きの分類器は `x1_0` 版もありますが、tract 上では `x0_25` 版のほうが約 3 倍速いため、こちらを推奨します。
+
+> **既知の制約:**
+> - 推論は既定で論理 CPU 数（最大 8）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）では常にシングルスレッドです。
+> - PP-OCRv6 medium は CPU (tract・8 スレッド) で 1 枚あたり約 4.5 秒かかります。速度を優先する場合は tiny / small を推奨します。PP-OCRv5 との比較は `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` を参照してください。
+> - 行の上下補正は、短い大文字だけの行（`TAIYUAN` など）で判定を誤ることがあります。
+> - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。
+>
+> 調査の経緯と検討内容は `docs/devlog/ppocrv6/` を参照してください。
+
+## WebAssembly
+
+ブラウザ（`wasm32-unknown-unknown`）と WASI（`wasm32-wasip1`）で動作します。ブラウザにはファイルシステムがないので、モデル・`inference.yml`・画像はバイト列やテキストとして渡します。
+
+```rust
+let engine = OcrEngineBuilder::new()
+    .det_model_bytes(det_onnx)       // Vec<u8>
+    .det_config_yaml(det_yaml)       // String
+    .rec_model_bytes(rec_onnx)
+    .rec_config_yaml(rec_yaml)       // 辞書もここから読み込む
+    .build()?;
+let results = engine.run_from_bytes(&jpeg_bytes)?;
+```
+
+JavaScript から使う場合は、wasm-bindgen のバインディング `bindings/wasm` を使います。ビルド手順と、Web Worker で動かすデモは [examples/web/README.md](examples/web/README.md) にあります。
+
+```js
+const engine = new OcrEngineBuilder()
+  .detModel(detOnnxBytes, detYamlText)
+  .recModel(recOnnxBytes, recYamlText)
+  .build();
+const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, ...]
+```
+
+`.cargo/config.toml` で WebAssembly SIMD（`simd128`）を有効にしており、無効の場合より約 2 倍速くなります。ヘッドレス Chrome 153 での実測値（896x528 の画像）は次のとおりです。
+
+| モデル | 処理時間 |
+| :--- | ---: |
+| PP-OCRv6 tiny | 2.1 秒 |
+| PP-OCRv6 small（ページと行の向き補正あり） | 7.7 秒 |
+| PP-OCRv6 medium | 30.4 秒 |
+
+`OcrEngine` は `Send + Sync` なので、`Arc` で包めば複数スレッドから同時に使えます。
 
 ### よくあるエラー
 
 - `ModelLoad`: `tract` が未対応のONNXオペレータ（例: `LayerNormalization`, `Scan`）を検出した場合に発生します。
+- `ModelConfig`: `inference.yml` を解析できない場合に発生します。PaddleOCR が出力した YAML（ブロック形式）にのみ対応しています。
 - `Dictionary`: 辞書ファイルの文字コードがUTF-8以外の場合に発生します。UTF-8 (BOM無し) で保存してください。
 
 ## API概要
@@ -126,14 +248,15 @@ cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
 
 | シンボル           | 概要                                                                                           |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
-| `OcrEngineBuilder` | モデル・辞書・パラメータを設定し、`OcrEngine` を構築するためのビルダー。                       |
+| `OcrEngineBuilder` | モデル・辞書・パラメータを設定し、`OcrEngine` を構築するためのビルダー。`det_model_dir` / `rec_model_dir` で PaddleOCR のモデルディレクトリを指定できます。 |
 | `OcrEngine`        | 検出・認識パイプラインを統合したファサード。`run_from_path` と `run_from_image` を提供します。 |
 | `OcrRunWithMetrics`| OCR 実行結果とステージ別メトリクス (`OcrTimings`) をまとめて返すヘルパー構造体。               |
-| `OcrTimings`       | 全体時間・画像デコード時間・DBNet / SVTR の各ステージ時間を集約したメトリクス。                 |
+| `OcrTimings`       | 全体・画像デコード・方向分類・検出と認識の各ステージの所要時間。                 |
 | `StageTimings`     | 個別ステージ（前処理・推論・後処理）の所要時間を表すユーティリティ。                            |
 | `OcrResult`        | 認識された単一テキスト領域の結果 (`text`, `confidence`, `bounding_box`) を保持します。         |
 | `OcrError`         | ライブラリ全体で発生し得るエラーをカプセル化した列挙型です。                                   |
 | `Polygon`          | `geo-types::Polygon` の再エクスポート。検出結果の座標表現に利用します。                        |
+| `PaddleInferenceConfig` | PaddleOCR の `inference.yml` から、前処理パラメータ・しきい値・辞書を読み取ります。 |
 
 詳細なAPI仕様については `docs/interface_design.md` および `docs/interface_design_en.md` を参照してください。
 
@@ -174,6 +297,13 @@ cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
 - 2025-11-10: `task-fix-001` で `RecDictionary` に blank トークンを追加し、`OcrEngineBuilder` と CTC デコーダーが PaddleOCR の仕様 (`blank_id = 0`) と一致するように修正。
 - 2025-11-10: `task-fix-002` で認識信頼度を「確率出力を検出して最大値を直接集計し、ロジット出力は log-sum-exp で Softmax 後に算術平均化する」方式へ刷新し、`ocr_smoke` の信頼度出力が実測値を反映するよう改善。
 - 2025-11-10: `task-fix-003` で `ocr_smoke` に `--benchmark` 計測フラグと `OcrEngine::run_with_metrics_*` API を追加し、主要ステージの所要時間を取得可能にした。
+- 2026-10-03: **v0.2.0**。詳細は `CHANGELOG.md` と `docs/devlog/` を参照。
+  - PP-OCRv6（tiny / small / medium）に対応した。PaddleOCR 3.x のモデルディレクトリと `inference.yml` をそのまま読み込める（`docs/devlog/ppocrv6/`）。
+  - 前処理と後処理を PaddleOCR 3.x に揃え、PaddleOCR 3.7 との一致テストを追加した。v6 medium は、テスト画像で本家と完全に一致する（`task-v6-010`）。
+  - 検出領域の回転補正、ページの向き・行の上下の分類器、原寸での検出モードを追加した。
+  - ブラウザ（WebAssembly）に対応した。メモリからの入力、wasm-bindgen のバインディング、デモを追加した（`docs/devlog/wasm/`）。
+  - 推論をマルチスレッド化し、認識のバッチサイズを 1 にした。パイプライン全体で 2.9〜4.7 倍速くなった（`docs/devlog/perf/`）。
+  - CI（GitHub Actions）と、テスト用モデルの取得スクリプトを整備した。
 
 ## コントリビューション
 
@@ -191,5 +321,8 @@ Pull Request や Issue を歓迎します。大規模な変更を提案する場
 
 ## テスト
 
-- ユニットテスト: `cargo test`
+- テスト用モデルの取得: `scripts/fetch_fixtures.sh`（既定のテストに必要な約 35MB。`--all` で small/medium なども取得）
+- テスト: `cargo test --release`（推論を含むため release ビルドを推奨）
+- CI: GitHub Actions（`.github/workflows/ci.yml`）で fmt、clippy、Linux と Windows でのテスト、MSRV、WebAssembly ビルドを確認しています。
+- PP-OCRv6 テスト (`tests/ppocrv6.rs`): tiny のパイプラインは既定で実行されます。small と medium は `cargo test --release --test ppocrv6 -- --ignored` で実行します。
 - 結合テスト: PP-OCRv5 モデルとテスト画像を `PURE_ONNX_OCR_FIXTURE_DIR` または `tests/fixtures/` に配置してください。フィクスチャが見つからない場合、テストは自動的にスキップされます。必要なパス構成は `tests/fixtures/README.md` を参照してください。

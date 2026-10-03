@@ -25,3 +25,11 @@ tests/fixtures/models/ppocrv5
 date
 temp/
 sample*.jpg
+# wasm-bindgen output
+bindings/wasm/pkg/
+examples/web/pkg/
+examples/web/models/
+
+# Python environment for scripts/paddleocr_reference.py (uv)
+.venv/
+__pycache__/

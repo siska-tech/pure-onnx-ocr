@@ -1,25 +1,29 @@
+use crate::crop::{crop_quad, min_area_quad, RecCropMode};
 use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
+use crate::orientation::{rotate_ccw, unrotate_point, OrientationClassifier, OrientationError};
+use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::postprocessing::{
-    DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
-    DetPostProcessor, DetPostProcessorConfig, DetPostProcessorError,
+    DetPolygonUnclipper, DetPolygonUnclipperConfig, DetPostProcessor, DetPostProcessorConfig,
+    DetPostProcessorError,
 };
 use crate::preprocessing::{
-    DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
+    DetLimitType, DetPreProcessor, DetPreProcessorConfig, DetPreProcessorError, RecPreProcessor,
     RecPreProcessorConfig, RecPreProcessorError, RecTextRegion,
 };
 use crate::recognition::{
     RecInferenceSession, RecPostProcessor, RecPostProcessorConfig, RecPostProcessorError,
 };
+use crate::time::Instant;
 use geo_types::Polygon;
-use image::{DynamicImage, GenericImageView, ImageError};
+use image::{imageops, DynamicImage, GenericImageView, ImageError, RgbImage};
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tract_onnx::prelude::TractError;
 
 /// Errors that can occur while building or using the OCR engine.
@@ -36,6 +40,18 @@ pub enum OcrError {
     ModelLoad { source: TractError, path: PathBuf },
     /// Loading the recognition dictionary failed.
     Dictionary { source: DictionaryError },
+    /// Loading an orientation classifier failed.
+    OrientationLoad {
+        source: OrientationError,
+        path: PathBuf,
+    },
+    /// Running an orientation classifier failed.
+    OrientationInference { source: TractError },
+    /// Reading a PaddleOCR `inference.yml` failed.
+    ModelConfig {
+        source: PaddleConfigError,
+        path: PathBuf,
+    },
     /// The provided configuration contained invalid values.
     InvalidConfiguration { message: String },
     /// Failed to decode the input image.
@@ -72,6 +88,15 @@ impl fmt::Display for OcrError {
                 write!(f, "failed to load ONNX model {:?}: {}", path, source)
             }
             OcrError::Dictionary { source } => write!(f, "failed to load dictionary: {}", source),
+            OcrError::OrientationLoad { path, source } => {
+                write!(f, "failed to load orientation classifier {:?}: {}", path, source)
+            }
+            OcrError::OrientationInference { source } => {
+                write!(f, "orientation classification failed: {}", source)
+            }
+            OcrError::ModelConfig { path, source } => {
+                write!(f, "failed to read model config {:?}: {}", path, source)
+            }
             OcrError::InvalidConfiguration { message } => write!(f, "{}", message),
             OcrError::ImageDecode { path, source } => {
                 write!(f, "failed to decode image {:?}: {}", path, source)
@@ -128,16 +153,6 @@ impl From<RecPostProcessorError> for OcrError {
     fn from(source: RecPostProcessorError) -> Self {
         OcrError::RecognitionPostProcess { source }
     }
-}
-
-fn polygons_to_text_regions(
-    polygons: &[Polygon<f64>],
-    image_dims: (u32, u32),
-) -> Vec<RecTextRegion> {
-    polygons
-        .iter()
-        .map(|polygon| polygon_to_text_region(polygon, image_dims))
-        .collect()
 }
 
 fn polygon_to_text_region(polygon: &Polygon<f64>, image_dims: (u32, u32)) -> RecTextRegion {
@@ -230,6 +245,9 @@ impl Error for OcrError {
             OcrError::Io { source, .. } => Some(source),
             OcrError::ModelLoad { .. } => None,
             OcrError::Dictionary { source } => Some(source),
+            OcrError::ModelConfig { source, .. } => Some(source),
+            OcrError::OrientationLoad { source, .. } => Some(source),
+            OcrError::OrientationInference { .. } => None,
             OcrError::InvalidConfiguration { .. } => None,
             OcrError::ImageDecode { source, .. } => Some(source),
             OcrError::DetectionPreprocess { source } => Some(source),
@@ -255,10 +273,13 @@ pub struct OcrEngineConfig {
     pub det_preprocessor: DetPreProcessorConfig,
     pub det_postprocessor: DetPostProcessorConfig,
     pub det_unclipper: DetPolygonUnclipperConfig,
-    pub det_polygon_scaler: DetPolygonScalerConfig,
     pub rec_preprocessor: RecPreProcessorConfig,
     pub rec_postprocessor: RecPostProcessorConfig,
     pub rec_batch_size: usize,
+    /// How text regions are cut out before recognition.
+    pub rec_crop_mode: RecCropMode,
+    /// Number of threads used for tract's matrix multiplications.
+    pub inference_threads: usize,
 }
 
 impl Default for OcrEngineConfig {
@@ -267,29 +288,32 @@ impl Default for OcrEngineConfig {
             det_preprocessor: DetPreProcessorConfig::default(),
             det_postprocessor: DetPostProcessorConfig::default(),
             det_unclipper: DetPolygonUnclipperConfig::default(),
-            det_polygon_scaler: DetPolygonScalerConfig::default(),
             rec_preprocessor: RecPreProcessorConfig::default(),
             rec_postprocessor: RecPostProcessorConfig::default(),
-            rec_batch_size: 8,
+            rec_batch_size: 1,
+            rec_crop_mode: RecCropMode::default(),
+            inference_threads: 1,
         }
     }
 }
 
 /// Fully prepared OCR engine orchestrating the detection and recognition pipelines.
 ///
-/// The engine executes inference synchronously: upcoming methods such as
-/// [`OcrEngine::run_from_path`](#method.run_from_path) and
-/// [`OcrEngine::run_from_image`](#method.run_from_image) (implemented in later tasks)
-/// will block the caller until the complete pipeline finishes. Internally, every heavy-weight
-/// component (preprocessors, ONNX sessions, dictionary and post-processors) is wrapped in
-/// `Arc`, allowing callers to share a single engine instance across threads or to clone the
-/// engine for concurrent use when needed.
+/// The engine executes inference synchronously: [`OcrEngine::run_from_path`],
+/// [`OcrEngine::run_from_image`] and [`OcrEngine::run_from_bytes`] block the
+/// caller until the complete pipeline finishes.
+///
+/// `OcrEngine` is `Send + Sync`: wrap it in an `Arc` to run OCR from several
+/// threads at once. The compiled-plan caches are guarded by a mutex that is
+/// held only while looking up or inserting a plan, never during inference.
 #[derive(Debug)]
 pub struct OcrEngine {
     assets: EngineAssets,
     detection: DetectionPipeline,
     recognition: RecognitionPipeline,
     config: OcrEngineConfig,
+    doc_orientation: Option<OrientationClassifier>,
+    textline_orientation: Option<OrientationClassifier>,
 }
 
 /// Result of running the full OCR pipeline for a single detected region.
@@ -297,6 +321,9 @@ pub struct OcrEngine {
 pub struct OcrResult {
     pub text: String,
     pub confidence: f32,
+    /// Detected text box in input-image pixels: the minimum-area rectangle
+    /// (`tl, tr, br, bl`, closed ring), computed like PaddleOCR's
+    /// `DBPostProcess` and rounded to whole pixels.
     pub bounding_box: Polygon<f64>,
 }
 
@@ -321,6 +348,8 @@ impl StageTimings {
 pub struct OcrTimings {
     pub total: Duration,
     pub image_decode: Duration,
+    /// Time spent in the document and text-line orientation classifiers.
+    pub orientation: Duration,
     pub detection: StageTimings,
     pub recognition: StageTimings,
 }
@@ -330,6 +359,7 @@ impl OcrTimings {
         Self {
             total: Duration::ZERO,
             image_decode: Duration::ZERO,
+            orientation: Duration::ZERO,
             detection: StageTimings::zero(),
             recognition: StageTimings::zero(),
         }
@@ -340,17 +370,48 @@ impl OcrTimings {
 pub struct OcrRunWithMetrics {
     pub results: Vec<OcrResult>,
     pub timings: OcrTimings,
+    /// Angle (0, 90, 180 or 270) the document orientation classifier
+    /// rotated the page by before detection, when that classifier is enabled.
+    /// Result polygons are always reported in the input image's coordinates.
+    pub doc_orientation_angle: Option<u32>,
 }
 
 impl OcrEngine {
+    /// Cuts every detected polygon out of `image` according to
+    /// [`OcrEngineConfig::rec_crop_mode`].
+    fn crop_regions(
+        &self,
+        image: &DynamicImage,
+        polygons: &[Polygon<f64>],
+        image_dims: (u32, u32),
+    ) -> Vec<RgbImage> {
+        let rgb = image.to_rgb8();
+        polygons
+            .iter()
+            .map(|polygon| {
+                if self.config.rec_crop_mode == RecCropMode::Rotated {
+                    if let Some(crop) =
+                        min_area_quad(polygon).and_then(|quad| crop_quad(&rgb, &quad))
+                    {
+                        return crop;
+                    }
+                }
+                let region = polygon_to_text_region(polygon, image_dims);
+                imageops::crop_imm(&rgb, region.x, region.y, region.width, region.height).to_image()
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)] // private constructor fed by the builder
     fn new(
-        det_model_path: PathBuf,
-        rec_model_path: PathBuf,
-        dictionary_path: PathBuf,
+        det_model_path: Option<PathBuf>,
+        rec_model_path: Option<PathBuf>,
+        dictionary_path: Option<PathBuf>,
         det_session: DetInferenceSession,
         rec_session: RecInferenceSession,
         dictionary: RecDictionary,
         config: OcrEngineConfig,
+        executor: crate::threading::Executor,
     ) -> Self {
         let assets = EngineAssets::new(det_model_path, rec_model_path, dictionary_path);
 
@@ -363,7 +424,6 @@ impl OcrEngine {
             config.det_preprocessor,
             config.det_postprocessor,
             config.det_unclipper,
-            config.det_polygon_scaler,
         );
 
         let recognition = RecognitionPipeline::new(
@@ -371,6 +431,7 @@ impl OcrEngine {
             Arc::clone(&dictionary),
             config.rec_preprocessor.clone(),
             config.rec_postprocessor.clone(),
+            executor,
         );
 
         Self {
@@ -378,6 +439,8 @@ impl OcrEngine {
             detection,
             recognition,
             config,
+            doc_orientation: None,
+            textline_orientation: None,
         }
     }
 
@@ -399,8 +462,36 @@ impl OcrEngine {
             source,
             path: path_ref.to_path_buf(),
         })?;
+        let image_decode = decode_start.elapsed();
         let mut run = self.run_with_metrics_from_image_impl(&image)?;
-        run.timings.image_decode = decode_start.elapsed();
+        run.timings.image_decode = image_decode;
+        run.timings.total = overall_start.elapsed();
+        Ok(run)
+    }
+
+    /// Decodes an encoded image (PNG, JPEG, ...) held in memory and runs the
+    /// full OCR pipeline on it. Useful where no file system is available,
+    /// such as in browsers.
+    pub fn run_from_bytes(&self, image_bytes: &[u8]) -> Result<Vec<OcrResult>, OcrError> {
+        Ok(self.run_with_metrics_from_bytes(image_bytes)?.results)
+    }
+
+    /// Same as [`run_from_bytes`](Self::run_from_bytes) and also returns
+    /// benchmarking data.
+    pub fn run_with_metrics_from_bytes(
+        &self,
+        image_bytes: &[u8],
+    ) -> Result<OcrRunWithMetrics, OcrError> {
+        let overall_start = Instant::now();
+        let decode_start = Instant::now();
+        let image =
+            image::load_from_memory(image_bytes).map_err(|source| OcrError::ImageDecode {
+                source,
+                path: PathBuf::from(crate::dictionary::IN_MEMORY),
+            })?;
+        let image_decode = decode_start.elapsed();
+        let mut run = self.run_with_metrics_from_image_impl(&image)?;
+        run.timings.image_decode = image_decode;
         run.timings.total = overall_start.elapsed();
         Ok(run)
     }
@@ -412,17 +503,24 @@ impl OcrEngine {
     }
 
     /// Returns the path used for the detection model.
-    pub fn det_model_path(&self) -> &Path {
+    ///
+    /// `None` when the model was supplied as bytes.
+    pub fn det_model_path(&self) -> Option<&Path> {
         self.assets.det_model_path()
     }
 
     /// Returns the path used for the recognition model.
-    pub fn rec_model_path(&self) -> &Path {
+    ///
+    /// `None` when the model was supplied as bytes.
+    pub fn rec_model_path(&self) -> Option<&Path> {
         self.assets.rec_model_path()
     }
 
     /// Returns the path used for the recognition dictionary.
-    pub fn dictionary_path(&self) -> &Path {
+    ///
+    /// `None` when the dictionary was supplied as text (or as in-memory
+    /// `inference.yml`).
+    pub fn dictionary_path(&self) -> Option<&Path> {
         self.assets.dictionary_path()
     }
 
@@ -449,6 +547,32 @@ impl OcrEngine {
     ) -> Result<OcrRunWithMetrics, OcrError> {
         let pipeline_start = Instant::now();
         let mut timings = OcrTimings::new();
+        let original_dims = image.dimensions();
+
+        // Document orientation: rotate the page upright before detection.
+        let mut doc_orientation_angle = None;
+        let rotated_page;
+        let image = match &self.doc_orientation {
+            Some(classifier) => {
+                let start = Instant::now();
+                let rgb = image.to_rgb8();
+                let angle = classifier
+                    .classify(std::slice::from_ref(&rgb))
+                    .map_err(|source| OcrError::OrientationInference { source })?
+                    .first()
+                    .map(|prediction| prediction.angle)
+                    .unwrap_or(0);
+                doc_orientation_angle = Some(angle);
+                timings.orientation += start.elapsed();
+                if angle == 0 {
+                    image
+                } else {
+                    rotated_page = DynamicImage::ImageRgb8(rotate_ccw(&rgb, angle));
+                    &rotated_page
+                }
+            }
+            None => image,
+        };
         let image_dims = image.dimensions();
 
         let (polygons, detection_timings) = self
@@ -461,12 +585,39 @@ impl OcrEngine {
             return Ok(OcrRunWithMetrics {
                 results: Vec::new(),
                 timings,
+                doc_orientation_angle,
             });
         }
 
-        let regions = polygons_to_text_regions(&polygons, image_dims);
-        let (sequences, recognition_timings) =
-            self.recognition.run_with_timings(image, &regions)?;
+        let crop_start = Instant::now();
+        let mut crops = self.crop_regions(image, &polygons, image_dims);
+        let crop_elapsed = crop_start.elapsed();
+
+        // Text-line orientation: turn upside-down crops by 180 degrees.
+        if let Some(classifier) = &self.textline_orientation {
+            let start = Instant::now();
+            let chunk = self.config.rec_batch_size.max(1);
+            for (chunk_index, batch) in crops.clone().chunks(chunk).enumerate() {
+                // Pad the last chunk to the full batch size so a single
+                // compiled plan serves every call.
+                let mut padded = batch.to_vec();
+                padded.resize(chunk, batch[batch.len() - 1].clone());
+                let predictions = classifier
+                    .classify(&padded)
+                    .map_err(|source| OcrError::OrientationInference { source })?;
+                for (offset, prediction) in predictions.iter().take(batch.len()).enumerate() {
+                    if prediction.angle == 180 {
+                        let index = chunk_index * chunk + offset;
+                        crops[index] = imageops::rotate180(&crops[index]);
+                    }
+                }
+            }
+            timings.orientation += start.elapsed();
+        }
+        let (sequences, mut recognition_timings) = self
+            .recognition
+            .run_with_timings(&crops, self.config.rec_batch_size)?;
+        recognition_timings.preprocess += crop_elapsed;
         timings.recognition = recognition_timings;
 
         if sequences.len() != polygons.len() {
@@ -478,40 +629,121 @@ impl OcrEngine {
 
         let results: Vec<OcrResult> = polygons
             .into_iter()
-            .zip(sequences.into_iter())
+            .zip(sequences)
             .map(|(polygon, sequence)| OcrResult {
                 text: sequence.text,
                 confidence: sequence.confidence,
-                bounding_box: polygon,
+                bounding_box: match doc_orientation_angle {
+                    Some(angle) if angle != 0 => unrotate_polygon(&polygon, angle, original_dims),
+                    _ => polygon,
+                },
             })
             .collect();
 
         timings.total = pipeline_start.elapsed();
 
-        Ok(OcrRunWithMetrics { results, timings })
+        Ok(OcrRunWithMetrics {
+            results,
+            timings,
+            doc_orientation_angle,
+        })
     }
 }
 
+fn unrotate_polygon(polygon: &Polygon<f64>, angle: u32, original_dims: (u32, u32)) -> Polygon<f64> {
+    let map = |line: &geo_types::LineString<f64>| {
+        line.coords()
+            .map(|c| {
+                let (x, y) = unrotate_point(c.x, c.y, angle, original_dims);
+                geo_types::Coord { x, y }
+            })
+            .collect::<Vec<_>>()
+            .into()
+    };
+    Polygon::new(
+        map(polygon.exterior()),
+        polygon.interiors().iter().map(map).collect(),
+    )
+}
+
+/// File name of the ONNX graph inside a PaddleOCR 3.x model directory.
+pub const PADDLE_MODEL_FILE: &str = "inference.onnx";
+/// File name of the inference config inside a PaddleOCR 3.x model directory.
+pub const PADDLE_CONFIG_FILE: &str = "inference.yml";
+
 /// Builder for constructing [`OcrEngine`] instances.
+///
+/// Models can be supplied either as individual files
+/// ([`det_model_path`](Self::det_model_path),
+/// [`rec_model_path`](Self::rec_model_path),
+/// [`dictionary_path`](Self::dictionary_path)) or as PaddleOCR 3.x model
+/// directories ([`det_model_dir`](Self::det_model_dir),
+/// [`rec_model_dir`](Self::rec_model_dir)) such as the PP-OCRv6 exports
+/// published on Hugging Face, which contain `inference.onnx` and
+/// `inference.yml`. When a model directory is used, the preprocessing
+/// parameters and the recognition dictionary are read from `inference.yml`.
 #[derive(Debug, Clone)]
 pub struct OcrEngineBuilder {
     det_model_path: Option<PathBuf>,
     rec_model_path: Option<PathBuf>,
     dictionary_path: Option<PathBuf>,
+    det_config_path: Option<PathBuf>,
+    rec_config_path: Option<PathBuf>,
+    det_model_bytes: Option<Arc<[u8]>>,
+    rec_model_bytes: Option<Arc<[u8]>>,
+    dictionary_text: Option<Arc<str>>,
+    det_config_yaml: Option<Arc<str>>,
+    rec_config_yaml: Option<Arc<str>>,
+    doc_orientation_bytes: Option<(Arc<[u8]>, Arc<str>)>,
+    textline_orientation_bytes: Option<(Arc<[u8]>, Arc<str>)>,
     det_limit_side_len: u32,
-    det_unclip_ratio: f32,
+    det_limit_type: DetLimitType,
+    det_max_side_limit: u32,
+    det_unclip_ratio: Option<f32>,
+    det_threshold: Option<f32>,
+    det_box_threshold: Option<f32>,
+    det_postprocess_from_model_config: bool,
     rec_batch_size: usize,
+    rec_use_space_char: bool,
+    rec_crop_mode: RecCropMode,
+    doc_orientation_dir: Option<PathBuf>,
+    textline_orientation_dir: Option<PathBuf>,
+    det_plan_cache_capacity: usize,
+    rec_plan_cache_capacity: usize,
+    inference_threads: Option<usize>,
 }
 
 impl Default for OcrEngineBuilder {
     fn default() -> Self {
+        let pre = DetPreProcessorConfig::default();
         Self {
             det_model_path: None,
             rec_model_path: None,
             dictionary_path: None,
-            det_limit_side_len: DetPreProcessorConfig::default().limit_side_len,
-            det_unclip_ratio: DetPolygonUnclipperConfig::default().unclip_ratio,
+            det_config_path: None,
+            rec_config_path: None,
+            det_model_bytes: None,
+            rec_model_bytes: None,
+            dictionary_text: None,
+            det_config_yaml: None,
+            rec_config_yaml: None,
+            doc_orientation_bytes: None,
+            textline_orientation_bytes: None,
+            det_limit_side_len: pre.limit_side_len,
+            det_limit_type: pre.limit_type,
+            det_max_side_limit: pre.max_side_limit,
+            det_unclip_ratio: None,
+            det_threshold: None,
+            det_box_threshold: None,
+            det_postprocess_from_model_config: false,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
+            rec_use_space_char: true,
+            rec_crop_mode: RecCropMode::default(),
+            doc_orientation_dir: None,
+            textline_orientation_dir: None,
+            det_plan_cache_capacity: crate::detection::DEFAULT_DET_PLAN_CACHE,
+            rec_plan_cache_capacity: crate::recognition::DEFAULT_REC_PLAN_CACHE,
+            inference_threads: None,
         }
     }
 }
@@ -525,18 +757,107 @@ impl OcrEngineBuilder {
     /// Sets the path to the DBNet detection ONNX model.
     pub fn det_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.det_model_path = Some(path.as_ref().to_path_buf());
+        self.det_model_bytes = None;
         self
     }
 
-    /// Sets the path to the SVTR recognition ONNX model.
+    /// Sets the path to the CTC recognition ONNX model.
     pub fn rec_model_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.rec_model_path = Some(path.as_ref().to_path_buf());
+        self.rec_model_bytes = None;
         self
     }
 
-    /// Sets the path to the recognition dictionary file.
+    /// Sets the path to the recognition dictionary.
+    ///
+    /// Accepts either a plain text dictionary (one character per line, e.g.
+    /// `ppocrv5_dict.txt`) or a PaddleOCR `inference.yml` whose
+    /// `PostProcess.character_dict` holds the characters.
     pub fn dictionary_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.dictionary_path = Some(path.as_ref().to_path_buf());
+        self.dictionary_text = None;
+        self
+    }
+
+    /// Uses a PaddleOCR 3.x detection model directory containing
+    /// `inference.onnx` and (optionally) `inference.yml`.
+    pub fn det_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        let dir = dir.as_ref();
+        self.det_model_path = Some(dir.join(PADDLE_MODEL_FILE));
+        self.det_model_bytes = None;
+        self.det_config_yaml = None;
+        let config = dir.join(PADDLE_CONFIG_FILE);
+        self.det_config_path = config.exists().then_some(config);
+        self
+    }
+
+    /// Uses a PaddleOCR 3.x recognition model directory containing
+    /// `inference.onnx` and `inference.yml`. Unless
+    /// [`dictionary_path`](Self::dictionary_path) is set explicitly, the
+    /// dictionary embedded in `inference.yml` is used.
+    pub fn rec_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        let dir = dir.as_ref();
+        self.rec_model_path = Some(dir.join(PADDLE_MODEL_FILE));
+        self.rec_model_bytes = None;
+        self.rec_config_yaml = None;
+        let config = dir.join(PADDLE_CONFIG_FILE);
+        self.rec_config_path = config.exists().then_some(config);
+        self
+    }
+
+    /// Uses a DBNet detection ONNX model held in memory instead of a file,
+    /// e.g. bytes fetched by a browser. Replaces any configured path.
+    pub fn det_model_bytes(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.det_model_bytes = Some(Arc::from(bytes.into()));
+        self.det_model_path = None;
+        self
+    }
+
+    /// Uses a CTC recognition ONNX model held in memory instead of a file.
+    pub fn rec_model_bytes(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.rec_model_bytes = Some(Arc::from(bytes.into()));
+        self.rec_model_path = None;
+        self
+    }
+
+    /// Uses the text of a detection `inference.yml` held in memory
+    /// (same effect as [`det_config_path`](Self::det_config_path)).
+    pub fn det_config_yaml(mut self, yaml: impl Into<String>) -> Self {
+        self.det_config_yaml = Some(Arc::from(yaml.into()));
+        self.det_config_path = None;
+        self
+    }
+
+    /// Uses the text of a recognition `inference.yml` held in memory (same
+    /// effect as [`rec_config_path`](Self::rec_config_path), including the
+    /// embedded dictionary when no other dictionary is configured).
+    pub fn rec_config_yaml(mut self, yaml: impl Into<String>) -> Self {
+        self.rec_config_yaml = Some(Arc::from(yaml.into()));
+        self.rec_config_path = None;
+        self
+    }
+
+    /// Uses a plain text dictionary (one character per line) held in memory.
+    pub fn dictionary_text(mut self, text: impl Into<String>) -> Self {
+        self.dictionary_text = Some(Arc::from(text.into()));
+        self.dictionary_path = None;
+        self
+    }
+
+    /// Reads detection preprocessing parameters (channel order and
+    /// normalisation) from a PaddleOCR `inference.yml`.
+    pub fn det_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.det_config_path = Some(path.as_ref().to_path_buf());
+        self.det_config_yaml = None;
+        self
+    }
+
+    /// Reads recognition parameters (channel order, input shape and, when no
+    /// explicit dictionary is configured, the dictionary) from a PaddleOCR
+    /// `inference.yml`.
+    pub fn rec_config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.rec_config_path = Some(path.as_ref().to_path_buf());
+        self.rec_config_yaml = None;
         self
     }
 
@@ -546,9 +867,58 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Selects how `det_limit_side_len` is applied (PaddleOCR `limit_type`).
+    ///
+    /// The default [`DetLimitType::Max`] with 960 downscales large images,
+    /// which is fast on CPU. PaddleOCR 3.x runs detection with
+    /// `DetLimitType::Min` and a limit of 64, i.e. at native resolution:
+    ///
+    /// ```no_run
+    /// # use pure_onnx_ocr::{DetLimitType, OcrEngineBuilder};
+    /// let builder = OcrEngineBuilder::new()
+    ///     .det_limit_side_len(64)
+    ///     .det_limit_type(DetLimitType::Min);
+    /// ```
+    pub fn det_limit_type(mut self, limit_type: DetLimitType) -> Self {
+        self.det_limit_type = limit_type;
+        self
+    }
+
+    /// Sets the hard upper bound for the longest detection input side
+    /// (PaddleOCR `max_side_limit`, default 4000). `0` disables it.
+    pub fn det_max_side_limit(mut self, limit: u32) -> Self {
+        self.det_max_side_limit = limit;
+        self
+    }
+
+    /// When enabled, the detection `inference.yml` `PostProcess` values
+    /// (`thresh`, `box_thresh`, `unclip_ratio`, `max_candidates`) are used
+    /// instead of the PaddleOCR pipeline defaults (0.3 / 0.6 / 1.5 / 1000).
+    /// Values set explicitly through [`det_threshold`](Self::det_threshold),
+    /// [`det_box_threshold`](Self::det_box_threshold) or
+    /// [`det_unclip_ratio`](Self::det_unclip_ratio) still take precedence.
+    pub fn det_postprocess_from_model_config(mut self, enabled: bool) -> Self {
+        self.det_postprocess_from_model_config = enabled;
+        self
+    }
+
     /// Sets the unclip ratio used during polygon offsetting.
     pub fn det_unclip_ratio(mut self, ratio: f64) -> Self {
-        self.det_unclip_ratio = ratio as f32;
+        self.det_unclip_ratio = Some(ratio as f32);
+        self
+    }
+
+    /// Sets the probability threshold used to binarise the DBNet output
+    /// (PaddleOCR `thresh`, default `0.3`).
+    pub fn det_threshold(mut self, threshold: f32) -> Self {
+        self.det_threshold = Some(threshold);
+        self
+    }
+
+    /// Sets the minimum mean probability for a detected region
+    /// (PaddleOCR `box_thresh`, default `0.6`).
+    pub fn det_box_threshold(mut self, threshold: f32) -> Self {
+        self.det_box_threshold = Some(threshold);
         self
     }
 
@@ -558,17 +928,117 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Controls whether `" "` is appended to the dictionary as the last class
+    /// (PaddleOCR `use_space_char`, default `true`). PP-OCRv5 and PP-OCRv6
+    /// recognition models are trained with the space class.
+    pub fn rec_use_space_char(mut self, enabled: bool) -> Self {
+        self.rec_use_space_char = enabled;
+        self
+    }
+
+    /// Selects how detected regions are cut out for recognition. The default
+    /// [`RecCropMode::Rotated`] straightens tilted text and rotates vertical
+    /// text like PaddleOCR; [`RecCropMode::AxisAligned`] uses plain bounding
+    /// boxes.
+    pub fn rec_crop_mode(mut self, mode: RecCropMode) -> Self {
+        self.rec_crop_mode = mode;
+        self
+    }
+
+    /// Enables the document orientation classifier
+    /// (`PP-LCNet_x1_0_doc_ori`): the page is classified as rotated by 0, 90,
+    /// 180 or 270 degrees and turned upright before detection. Result
+    /// polygons are mapped back to the input image's coordinates.
+    pub fn doc_orientation_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        self.doc_orientation_dir = Some(dir.as_ref().to_path_buf());
+        self.doc_orientation_bytes = None;
+        self
+    }
+
+    /// Same as [`doc_orientation_model_dir`](Self::doc_orientation_model_dir)
+    /// with the ONNX bytes and `inference.yml` text held in memory.
+    pub fn doc_orientation_model_bytes(
+        mut self,
+        model: impl Into<Vec<u8>>,
+        config_yaml: impl Into<String>,
+    ) -> Self {
+        self.doc_orientation_bytes = Some((Arc::from(model.into()), Arc::from(config_yaml.into())));
+        self.doc_orientation_dir = None;
+        self
+    }
+
+    /// Enables the text-line orientation classifier
+    /// (`PP-LCNet_x*_textline_ori`): every cropped line predicted as
+    /// upside down is rotated by 180 degrees before recognition.
+    pub fn textline_orientation_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        self.textline_orientation_dir = Some(dir.as_ref().to_path_buf());
+        self.textline_orientation_bytes = None;
+        self
+    }
+
+    /// Same as
+    /// [`textline_orientation_model_dir`](Self::textline_orientation_model_dir)
+    /// with the ONNX bytes and `inference.yml` text held in memory.
+    pub fn textline_orientation_model_bytes(
+        mut self,
+        model: impl Into<Vec<u8>>,
+        config_yaml: impl Into<String>,
+    ) -> Self {
+        self.textline_orientation_bytes =
+            Some((Arc::from(model.into()), Arc::from(config_yaml.into())));
+        self.textline_orientation_dir = None;
+        self
+    }
+
+    /// Limits how many compiled inference plans are cached per model.
+    ///
+    /// `tract` compiles one plan per input shape (detection: image size,
+    /// recognition: batch size and width). Each plan keeps its own optimised
+    /// weights, so large models (PP-OCRv6 medium) benefit from a small limit.
+    /// Defaults: 4 detection plans, 16 recognition plans.
+    pub fn plan_cache_capacity(mut self, detection: usize, recognition: usize) -> Self {
+        self.det_plan_cache_capacity = detection;
+        self.rec_plan_cache_capacity = recognition;
+        self
+    }
+
+    /// Sets how many threads run the ONNX models (matrix multiplications are
+    /// split across a rayon pool owned by the engine). `1` runs
+    /// single-threaded.
+    ///
+    /// Defaults to [`default_inference_threads`](crate::default_inference_threads):
+    /// the number of logical CPUs capped at 8. Ignored (always 1) on
+    /// WebAssembly or when the `multithread` feature is disabled.
+    pub fn inference_threads(mut self, threads: usize) -> Self {
+        self.inference_threads = Some(threads.max(1));
+        self
+    }
+
     /// Consumes the builder and attempts to construct an [`OcrEngine`].
     pub fn build(self) -> Result<OcrEngine, OcrError> {
-        let det_model_path = self.det_model_path.ok_or(OcrError::MissingField {
-            field: "det_model_path",
-        })?;
-        let rec_model_path = self.rec_model_path.ok_or(OcrError::MissingField {
-            field: "rec_model_path",
-        })?;
-        let dictionary_path = self.dictionary_path.ok_or(OcrError::MissingField {
-            field: "dictionary_path",
-        })?;
+        if self.det_model_path.is_none() && self.det_model_bytes.is_none() {
+            return Err(OcrError::MissingField {
+                field: "det_model_path",
+            });
+        }
+        if self.rec_model_path.is_none() && self.rec_model_bytes.is_none() {
+            return Err(OcrError::MissingField {
+                field: "rec_model_path",
+            });
+        }
+        let dictionary_source = if let Some(text) = &self.dictionary_text {
+            DictionarySource::Text(Arc::clone(text))
+        } else if let Some(path) = &self.dictionary_path {
+            DictionarySource::Path(path.clone())
+        } else if let Some(yaml) = &self.rec_config_yaml {
+            DictionarySource::Yaml(Arc::clone(yaml))
+        } else if let Some(path) = &self.rec_config_path {
+            DictionarySource::Path(path.clone())
+        } else {
+            return Err(OcrError::MissingField {
+                field: "dictionary_path",
+            });
+        };
 
         if self.rec_batch_size == 0 {
             return Err(OcrError::InvalidConfiguration {
@@ -576,44 +1046,268 @@ impl OcrEngineBuilder {
             });
         }
 
-        verify_file_exists(&det_model_path)?;
-        verify_file_exists(&rec_model_path)?;
-        verify_file_exists(&dictionary_path)?;
+        if let Some(path) = &self.det_model_path {
+            verify_file_exists(path)?;
+        }
+        if let Some(path) = &self.rec_model_path {
+            verify_file_exists(path)?;
+        }
+        if let DictionarySource::Path(path) = &dictionary_source {
+            verify_file_exists(path)?;
+        }
 
-        let det_session =
-            DetInferenceSession::load(&det_model_path).map_err(|source| OcrError::ModelLoad {
-                source,
-                path: det_model_path.clone(),
-            })?;
-        let rec_session =
-            RecInferenceSession::load(&rec_model_path).map_err(|source| OcrError::ModelLoad {
-                source,
-                path: rec_model_path.clone(),
-            })?;
-        let dictionary = RecDictionary::from_path(&dictionary_path)?;
-
-        let mut det_unclipper_config = DetPolygonUnclipperConfig::default();
-        det_unclipper_config.unclip_ratio = self.det_unclip_ratio;
-
-        let mut det_preprocessor_config = DetPreProcessorConfig::default();
-        det_preprocessor_config.limit_side_len = self.det_limit_side_len;
+        let det_model_config = load_optional_config(
+            self.det_config_yaml.as_deref(),
+            self.det_config_path.as_deref(),
+        )?;
+        let rec_model_config = load_optional_config(
+            self.rec_config_yaml.as_deref(),
+            self.rec_config_path.as_deref(),
+        )?;
 
         let mut config = OcrEngineConfig::default();
-        config.det_preprocessor = det_preprocessor_config;
-        config.det_unclipper = det_unclipper_config;
+        config.det_preprocessor.limit_side_len = self.det_limit_side_len;
+        config.det_preprocessor.limit_type = self.det_limit_type;
+        config.det_preprocessor.max_side_limit = self.det_max_side_limit;
         config.rec_batch_size = self.rec_batch_size;
+        config.rec_crop_mode = self.rec_crop_mode;
+        config.inference_threads = if crate::threading::MULTITHREAD_SUPPORTED {
+            self.inference_threads
+                .unwrap_or_else(crate::threading::default_inference_threads)
+        } else {
+            1
+        };
+        let executor = crate::threading::executor_for(config.inference_threads);
+
+        if let Some(det_config) = &det_model_config {
+            apply_det_model_config(&mut config, det_config)?;
+            if self.det_postprocess_from_model_config {
+                apply_det_postprocess_config(&mut config, det_config);
+            }
+        }
+        if let Some(ratio) = self.det_unclip_ratio {
+            config.det_unclipper.unclip_ratio = ratio;
+        }
+        if let Some(threshold) = self.det_threshold {
+            config.det_postprocessor.threshold = threshold;
+        }
+        if let Some(threshold) = self.det_box_threshold {
+            config.det_postprocessor.box_threshold = threshold;
+        }
+        if let Some(rec_config) = &rec_model_config {
+            apply_rec_model_config(&mut config, rec_config)?;
+        }
+
+        let mut det_session = match (&self.det_model_bytes, &self.det_model_path) {
+            (Some(bytes), _) => DetInferenceSession::from_bytes(bytes),
+            (None, Some(path)) => DetInferenceSession::load(path),
+            (None, None) => unreachable!("checked above"),
+        }
+        .map_err(|source| OcrError::ModelLoad {
+            source,
+            path: origin_path(self.det_model_path.as_deref()),
+        })?;
+        let input_height = config.rec_preprocessor.target_height;
+        let mut rec_session = match (&self.rec_model_bytes, &self.rec_model_path) {
+            (Some(bytes), _) => {
+                RecInferenceSession::from_bytes_with_input_height(bytes, input_height)
+            }
+            (None, Some(path)) => RecInferenceSession::load_with_input_height(path, input_height),
+            (None, None) => unreachable!("checked above"),
+        }
+        .map_err(|source| OcrError::ModelLoad {
+            source,
+            path: origin_path(self.rec_model_path.as_deref()),
+        })?;
+
+        det_session.set_executor(executor.clone());
+        rec_session.set_executor(executor.clone());
+        det_session.set_plan_cache_capacity(self.det_plan_cache_capacity);
+        rec_session.set_plan_cache_capacity(self.rec_plan_cache_capacity);
+
+        let mut dictionary = match &dictionary_source {
+            DictionarySource::Path(path) => RecDictionary::from_path(path)?,
+            DictionarySource::Text(text) => RecDictionary::from_text(text)?,
+            DictionarySource::Yaml(yaml) => RecDictionary::from_inference_yml_str(yaml)?,
+        };
+        if self.rec_use_space_char {
+            dictionary = dictionary.with_space_char();
+        }
         config.rec_postprocessor.blank_id = dictionary.blank_id();
 
-        Ok(OcrEngine::new(
-            det_model_path,
-            rec_model_path,
+        let with_executor = |mut classifier: OrientationClassifier| {
+            classifier.set_executor(executor.clone());
+            classifier
+        };
+        let doc_orientation = load_optional_classifier(
+            self.doc_orientation_bytes.as_ref(),
+            self.doc_orientation_dir.as_deref(),
+        )?
+        .map(with_executor);
+        let textline_orientation = load_optional_classifier(
+            self.textline_orientation_bytes.as_ref(),
+            self.textline_orientation_dir.as_deref(),
+        )?
+        .map(with_executor);
+
+        let dictionary_path = match dictionary_source {
+            DictionarySource::Path(path) => Some(path),
+            _ => None,
+        };
+        let mut engine = OcrEngine::new(
+            self.det_model_path
+                .filter(|_| self.det_model_bytes.is_none()),
+            self.rec_model_path
+                .filter(|_| self.rec_model_bytes.is_none()),
             dictionary_path,
             det_session,
             rec_session,
             dictionary,
             config,
-        ))
+            executor,
+        );
+        engine.doc_orientation = doc_orientation;
+        engine.textline_orientation = textline_orientation;
+        Ok(engine)
     }
+}
+
+/// Where the recognition dictionary comes from.
+enum DictionarySource {
+    Path(PathBuf),
+    Text(Arc<str>),
+    Yaml(Arc<str>),
+}
+
+/// Path used in error messages: the file path, or `<memory>` for bytes.
+fn origin_path(path: Option<&Path>) -> PathBuf {
+    path.map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(crate::dictionary::IN_MEMORY))
+}
+
+fn load_optional_config(
+    yaml: Option<&str>,
+    path: Option<&Path>,
+) -> Result<Option<PaddleInferenceConfig>, OcrError> {
+    match (yaml, path) {
+        (Some(yaml), _) => PaddleInferenceConfig::from_yaml_str(yaml)
+            .map(Some)
+            .map_err(|source| OcrError::ModelConfig {
+                source,
+                path: origin_path(None),
+            }),
+        (None, Some(path)) => load_model_config(path).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+fn load_optional_classifier(
+    bytes: Option<&(Arc<[u8]>, Arc<str>)>,
+    dir: Option<&Path>,
+) -> Result<Option<OrientationClassifier>, OcrError> {
+    match (bytes, dir) {
+        (Some((model, yaml)), _) => OrientationClassifier::from_bytes(model, yaml)
+            .map(Some)
+            .map_err(|source| OcrError::OrientationLoad {
+                source,
+                path: origin_path(None),
+            }),
+        (None, Some(dir)) => load_orientation_classifier(dir).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+fn load_orientation_classifier(dir: &Path) -> Result<OrientationClassifier, OcrError> {
+    OrientationClassifier::from_model_dir(dir).map_err(|source| OcrError::OrientationLoad {
+        source,
+        path: dir.to_path_buf(),
+    })
+}
+
+fn load_model_config(path: &Path) -> Result<PaddleInferenceConfig, OcrError> {
+    PaddleInferenceConfig::from_path(path).map_err(|source| OcrError::ModelConfig {
+        source,
+        path: path.to_path_buf(),
+    })
+}
+
+fn apply_det_model_config(
+    config: &mut OcrEngineConfig,
+    model_config: &PaddleInferenceConfig,
+) -> Result<(), OcrError> {
+    if let Some(name) = model_config.post_process_name.as_deref() {
+        if name != "DBPostProcess" {
+            return Err(OcrError::InvalidConfiguration {
+                message: format!(
+                    "detection model config uses unsupported post-process `{}` (expected DBPostProcess)",
+                    name
+                ),
+            });
+        }
+    }
+    if let Some(order) = model_config.color_order {
+        config.det_preprocessor.color_order = order;
+    }
+    if let Some(mean) = model_config.normalize_mean {
+        config.det_preprocessor.mean = mean;
+    }
+    if let Some(std) = model_config.normalize_std {
+        config.det_preprocessor.std = std;
+    }
+    Ok(())
+}
+
+fn apply_det_postprocess_config(
+    config: &mut OcrEngineConfig,
+    model_config: &PaddleInferenceConfig,
+) {
+    if let Some(threshold) = model_config.det_thresh {
+        config.det_postprocessor.threshold = threshold;
+    }
+    if let Some(threshold) = model_config.det_box_thresh {
+        config.det_postprocessor.box_threshold = threshold;
+    }
+    if let Some(ratio) = model_config.det_unclip_ratio {
+        config.det_unclipper.unclip_ratio = ratio;
+    }
+    if let Some(max) = model_config.det_max_candidates {
+        config.det_postprocessor.max_candidates = max;
+    }
+}
+
+fn apply_rec_model_config(
+    config: &mut OcrEngineConfig,
+    model_config: &PaddleInferenceConfig,
+) -> Result<(), OcrError> {
+    if let Some(name) = model_config.post_process_name.as_deref() {
+        if name != "CTCLabelDecode" {
+            return Err(OcrError::InvalidConfiguration {
+                message: format!(
+                    "recognition model config uses unsupported post-process `{}` (expected CTCLabelDecode)",
+                    name
+                ),
+            });
+        }
+    }
+    if let Some(order) = model_config.color_order {
+        config.rec_preprocessor.color_order = order;
+    }
+    if let Some([channels, height, width]) = model_config.rec_image_shape {
+        if channels != 3 || height == 0 || width == 0 {
+            return Err(OcrError::InvalidConfiguration {
+                message: format!(
+                    "unsupported recognition image shape [{}, {}, {}]",
+                    channels, height, width
+                ),
+            });
+        }
+        config.rec_preprocessor.target_height = height;
+        config.rec_preprocessor.max_width = width;
+        if config.rec_preprocessor.max_dynamic_width < width {
+            config.rec_preprocessor.max_dynamic_width = width;
+        }
+    }
+    Ok(())
 }
 
 fn verify_file_exists(path: &Path) -> Result<(), OcrError> {
@@ -628,13 +1322,17 @@ fn verify_file_exists(path: &Path) -> Result<(), OcrError> {
 
 #[derive(Debug)]
 struct EngineAssets {
-    det_model_path: PathBuf,
-    rec_model_path: PathBuf,
-    dictionary_path: PathBuf,
+    det_model_path: Option<PathBuf>,
+    rec_model_path: Option<PathBuf>,
+    dictionary_path: Option<PathBuf>,
 }
 
 impl EngineAssets {
-    fn new(det_model_path: PathBuf, rec_model_path: PathBuf, dictionary_path: PathBuf) -> Self {
+    fn new(
+        det_model_path: Option<PathBuf>,
+        rec_model_path: Option<PathBuf>,
+        dictionary_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             det_model_path,
             rec_model_path,
@@ -642,16 +1340,16 @@ impl EngineAssets {
         }
     }
 
-    fn det_model_path(&self) -> &Path {
-        self.det_model_path.as_path()
+    fn det_model_path(&self) -> Option<&Path> {
+        self.det_model_path.as_deref()
     }
 
-    fn rec_model_path(&self) -> &Path {
-        self.rec_model_path.as_path()
+    fn rec_model_path(&self) -> Option<&Path> {
+        self.rec_model_path.as_deref()
     }
 
-    fn dictionary_path(&self) -> &Path {
-        self.dictionary_path.as_path()
+    fn dictionary_path(&self) -> Option<&Path> {
+        self.dictionary_path.as_deref()
     }
 }
 
@@ -661,7 +1359,6 @@ struct DetectionPipeline {
     session: Arc<DetInferenceSession>,
     postprocessor: DetPostProcessor,
     unclipper: DetPolygonUnclipper,
-    scaler: DetPolygonScaler,
 }
 
 impl DetectionPipeline {
@@ -670,14 +1367,12 @@ impl DetectionPipeline {
         preprocessor: DetPreProcessorConfig,
         postprocessor: DetPostProcessorConfig,
         unclipper: DetPolygonUnclipperConfig,
-        scaler: DetPolygonScalerConfig,
     ) -> Self {
         Self {
             preprocessor: DetPreProcessor::new(preprocessor),
             session,
             postprocessor: DetPostProcessor::new(postprocessor),
             unclipper: DetPolygonUnclipper::new(unclipper),
-            scaler: DetPolygonScaler::new(scaler),
         }
     }
 
@@ -698,14 +1393,29 @@ impl DetectionPipeline {
         let inference_elapsed = inference_start.elapsed();
 
         let post_start = Instant::now();
-        let contours = self
+        let boxes = self
             .postprocessor
-            .process(&inference)
+            .db_boxes(&inference.probability_map, &self.unclipper)
             .map_err(OcrError::from)?;
-        let unclipped = self.unclipper.unclip_contours(&contours);
-        let scaled = self
-            .scaler
-            .scale_polygons(&unclipped, preprocessed.scale_ratio, image_dims);
+        // Map from probability-map pixels back to the input image like
+        // PaddleOCR: per-axis scale, rounded and clamped to the image.
+        let (scale_x, scale_y) = preprocessed.inverse_scale();
+        let (width, height) = (image_dims.0 as f64, image_dims.1 as f64);
+        let scaled: Vec<Polygon<f64>> = boxes
+            .into_iter()
+            .map(|det_box| {
+                let mut coords: Vec<geo_types::Coord<f64>> = det_box
+                    .quad
+                    .iter()
+                    .map(|&(x, y)| geo_types::Coord {
+                        x: (x * scale_x).round().clamp(0.0, width),
+                        y: (y * scale_y).round().clamp(0.0, height),
+                    })
+                    .collect();
+                coords.push(coords[0]);
+                Polygon::new(geo_types::LineString::from(coords), vec![])
+            })
+            .collect();
         let post_elapsed = post_start.elapsed();
 
         let timings = StageTimings {
@@ -723,6 +1433,7 @@ struct RecognitionPipeline {
     preprocessor: RecPreProcessor,
     session: Arc<RecInferenceSession>,
     postprocessor: RecPostProcessor,
+    executor: crate::threading::Executor,
 }
 
 impl RecognitionPipeline {
@@ -731,6 +1442,7 @@ impl RecognitionPipeline {
         dictionary: Arc<RecDictionary>,
         preprocessor: RecPreProcessorConfig,
         postprocessor: RecPostProcessorConfig,
+        executor: crate::threading::Executor,
     ) -> Self {
         let postprocessor = RecPostProcessor::new(Arc::clone(&dictionary), postprocessor);
 
@@ -738,43 +1450,83 @@ impl RecognitionPipeline {
             preprocessor: RecPreProcessor::new(preprocessor),
             session,
             postprocessor,
+            executor,
         }
     }
 
+    /// Recognises `regions` in batches of at most `batch_size`.
+    ///
+    /// Like PaddleOCR, regions are sorted by aspect ratio first so that each
+    /// batch holds crops of similar width, which keeps padding (and thus
+    /// wasted compute) small. Results are returned in the original order.
     fn run_with_timings(
         &self,
-        image: &DynamicImage,
-        regions: &[RecTextRegion],
+        crops: &[RgbImage],
+        batch_size: usize,
     ) -> Result<(Vec<DecodedSequence>, StageTimings), OcrError> {
+        let mut timings = StageTimings::zero();
+        let mut order: Vec<usize> = (0..crops.len()).collect();
+        order.sort_by(|&a, &b| aspect_ratio(&crops[a]).total_cmp(&aspect_ratio(&crops[b])));
+        let chunks: Vec<&[usize]> = order.chunks(batch_size.max(1)).collect();
+
+        // Each stage processes all batches (in parallel when the engine has a
+        // thread pool) before the next stage starts, so the stage timings
+        // stay wall-clock durations.
         let preprocess_start = Instant::now();
-        let batch = self
-            .preprocessor
-            .process(image, regions)
-            .map_err(OcrError::from)?;
-        let preprocess_elapsed = preprocess_start.elapsed();
+        let batches = crate::threading::parallel_map(&self.executor, &chunks, |chunk| {
+            let batch_crops: Vec<RgbImage> =
+                chunk.iter().map(|&index| crops[index].clone()).collect();
+            self.preprocessor.process_images(&batch_crops)
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(OcrError::from)?;
+        timings.preprocess += preprocess_start.elapsed();
 
         let inference_start = Instant::now();
-        let inference = self
-            .session
-            .run(&batch)
-            .map_err(|source| OcrError::RecognitionInference { source })?;
-        let inference_elapsed = inference_start.elapsed();
+        let inferences = if batches.len() > 1 {
+            crate::threading::parallel_map(&self.executor, &batches, |batch| {
+                self.session.run_single_threaded(batch)
+            })
+        } else {
+            batches
+                .iter()
+                .map(|batch| self.session.run(batch))
+                .collect()
+        }
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| OcrError::RecognitionInference { source })?;
+        timings.inference += inference_start.elapsed();
 
         let post_start = Instant::now();
-        let sequences = self
-            .postprocessor
-            .process(&inference)
+        let decoded = inferences
+            .iter()
+            .map(|inference| self.postprocessor.process(inference))
+            .collect::<Result<Vec<_>, _>>()
             .map_err(OcrError::from)?;
-        let post_elapsed = post_start.elapsed();
+        timings.postprocess += post_start.elapsed();
 
-        let timings = StageTimings {
-            preprocess: preprocess_elapsed,
-            inference: inference_elapsed,
-            postprocess: post_elapsed,
-        };
+        let mut results: Vec<Option<DecodedSequence>> = vec![None; crops.len()];
+        for (chunk, sequences) in chunks.iter().zip(decoded) {
+            if sequences.len() != chunk.len() {
+                return Err(OcrError::PipelineMismatch {
+                    detection_regions: chunk.len(),
+                    recognition_results: sequences.len(),
+                });
+            }
+            for (&index, sequence) in chunk.iter().zip(sequences) {
+                results[index] = Some(sequence);
+            }
+        }
 
+        let sequences = results.into_iter().flatten().collect();
         Ok((sequences, timings))
     }
+}
+
+fn aspect_ratio(crop: &RgbImage) -> f64 {
+    crop.width() as f64 / crop.height().max(1) as f64
 }
 
 #[cfg(test)]
@@ -912,9 +1664,9 @@ mod tests {
             .build()
             .expect("engine should build successfully");
 
-        assert_eq!(engine.det_model_path(), det.as_path());
-        assert_eq!(engine.rec_model_path(), rec.as_path());
-        assert_eq!(engine.dictionary_path(), dict.as_path());
+        assert_eq!(engine.det_model_path(), Some(det.as_path()));
+        assert_eq!(engine.rec_model_path(), Some(rec.as_path()));
+        assert_eq!(engine.dictionary_path(), Some(dict.as_path()));
         assert_eq!(engine.rec_batch_size(), 6);
     }
 
@@ -1039,5 +1791,15 @@ mod tests {
             OcrError::RecognitionPostProcess { .. } => {}
             other => panic!("expected RecognitionPostProcess variant, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod thread_safety {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn engine_is_send_and_sync() {
+        assert_send_sync::<super::OcrEngine>();
     }
 }

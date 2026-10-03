@@ -2,19 +2,10 @@ use crate::dictionary::RecDictionary;
 use ndarray::{s, Array3, Axis};
 
 /// Configuration options for greedy CTC decoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CtcGreedyDecoderConfig {
     pub blank_id: usize,
     pub fallback_token: Option<String>,
-}
-
-impl Default for CtcGreedyDecoderConfig {
-    fn default() -> Self {
-        Self {
-            blank_id: 0,
-            fallback_token: None,
-        }
-    }
 }
 
 /// Errors that can be produced during greedy CTC decoding.
@@ -115,8 +106,8 @@ impl CtcGreedyDecoder {
         }
 
         let mut results = Vec::with_capacity(batch_size);
-        for batch_index in 0..batch_size {
-            let max_steps = valid_timesteps[batch_index].min(time_steps);
+        for (batch_index, &valid_steps) in valid_timesteps.iter().enumerate() {
+            let max_steps = valid_steps.min(time_steps);
             let mut previous_symbol: Option<usize> = None;
             let mut text = String::new();
             let mut token_indices = Vec::new();
