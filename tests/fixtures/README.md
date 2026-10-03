@@ -11,6 +11,7 @@ fixtures/
       rec.onnx
       ppocrv5_dict.txt
       rec.yml                 # optional: inference.yml of the v5 rec export
+      {mobile,server}_{det,rec}/ inference.onnx  inference.yml   # optional, for examples/ocr_bench
     ppocrv6/
       tiny_det/   inference.onnx  inference.yml
       tiny_rec/   inference.onnx  inference.yml

@@ -29,6 +29,7 @@ PaddleOCR PP-OCRv6（2026-06 公開）の ONNX モデル（tiny / small / medium
 | `[x]` | [`task-v6-008`](task-v6-008-rotated-crop.md) | 検出領域を回転補正して切り出す。縦長の領域は 90° 回転する | 10° 傾けた画像で、一致した行が 21 から 24 に増加 |
 | `[x]` | [`task-v6-009`](task-v6-009-orientation-classifiers.md) | ページの向き（0/90/180/270）と行の向き（0/180）の分類器 | 行の向きの分類器は x0_25 を推奨 |
 | `[x]` | `smoke/task-fix-001` | OCR 結果の乱れの調査をクローズする | [task-fix-001](../smoke/task-fix-001-ocr-smoke-quality.md) に再評価結果を記録 |
+| `[x]` | [`benchmark-v5-vs-v6`](benchmark-v5-vs-v6.md) | PP-OCRv5 と v6 の速度・精度の比較（tract / CPU） | v6 medium は v5 server より約 2.4 倍速い。v6 small は v5 mobile とほぼ同じ速さで精度が高い |
 
 ## 🔭 Follow-ups（未着手）
 
@@ -37,3 +38,5 @@ PaddleOCR PP-OCRv6（2026-06 公開）の ONNX モデル（tiny / small / medium
 | 低 | 文書の歪み補正（UVDoc）とレイアウト解析（PP-DocLayout など） | OCR パイプラインの外側にある文書解析の機能。出力形式（領域、表、読み順）を含めた API 設計が必要なので、別プロジェクトとして判断する |
 | 低 | 短い大文字だけの行で、上下の判定を取りこぼす問題 | PP-LCNet の 0/180 分類の限界。認識結果の信頼度を使った再判定などが考えられる |
 | 低 | `OcrResult` で、回転補正に使った四角形（`Quad`）を返す | 現在は検出ポリゴンだけを返している。公開構造体へのフィールド追加になる |
+| 中 | 推論のマルチスレッド化（tract の executor や rayon による並列化） | 本クレートは OpenVINO の公式値より 1 桁遅い。シングルスレッドで実行していることが主な原因と考えられる（[benchmark-v5-vs-v6](benchmark-v5-vs-v6.md)） |
+| 低 | `ocr_smoke --benchmark` でも Windows の電力スロットリングを外す | ベンチマーク用の example では対応済み。CLI はそのまま計測すると、値が数倍ぶれることがある |
