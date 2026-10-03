@@ -103,6 +103,14 @@ impl<K: PartialEq + Copy> PlanCache<K> {
     }
 }
 
+/// Locks a plan cache, ignoring poisoning (a panic while holding the lock
+/// cannot leave the cache in an invalid state).
+pub(crate) fn lock_cache<T>(cache: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

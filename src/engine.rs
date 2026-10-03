@@ -298,13 +298,13 @@ impl Default for OcrEngineConfig {
 
 /// Fully prepared OCR engine orchestrating the detection and recognition pipelines.
 ///
-/// The engine executes inference synchronously: upcoming methods such as
-/// [`OcrEngine::run_from_path`](#method.run_from_path) and
-/// [`OcrEngine::run_from_image`](#method.run_from_image) (implemented in later tasks)
-/// will block the caller until the complete pipeline finishes. Internally, every heavy-weight
-/// component (preprocessors, ONNX sessions, dictionary and post-processors) is wrapped in
-/// `Arc`, allowing callers to share a single engine instance across threads or to clone the
-/// engine for concurrent use when needed.
+/// The engine executes inference synchronously: [`OcrEngine::run_from_path`],
+/// [`OcrEngine::run_from_image`] and [`OcrEngine::run_from_bytes`] block the
+/// caller until the complete pipeline finishes.
+///
+/// `OcrEngine` is `Send + Sync`: wrap it in an `Arc` to run OCR from several
+/// threads at once. The compiled-plan caches are guarded by a mutex that is
+/// held only while looking up or inserting a plan, never during inference.
 #[derive(Debug)]
 pub struct OcrEngine {
     assets: EngineAssets,
@@ -1725,5 +1725,15 @@ mod tests {
             OcrError::RecognitionPostProcess { .. } => {}
             other => panic!("expected RecognitionPostProcess variant, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod thread_safety {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn engine_is_send_and_sync() {
+        assert_send_sync::<super::OcrEngine>();
     }
 }

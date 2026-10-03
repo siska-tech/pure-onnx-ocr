@@ -8,7 +8,6 @@ use crate::preprocessing::PreprocessedRecBatch;
 /// Default number of compiled recognition plans (one per batch size and width) kept in memory.
 pub const DEFAULT_REC_PLAN_CACHE: usize = 16;
 use ndarray::Array3;
-use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
 use tract_onnx::prelude::*;
@@ -26,7 +25,7 @@ pub struct RecInferenceOutput {
 pub struct RecInferenceSession {
     base_model: InferenceModel,
     input_height: u32,
-    cache: RefCell<PlanCache<(usize, u32)>>,
+    cache: std::sync::Mutex<PlanCache<(usize, u32)>>,
 }
 
 impl RecInferenceSession {
@@ -90,7 +89,7 @@ impl RecInferenceSession {
         Ok(Self {
             base_model: inference_model,
             input_height,
-            cache: RefCell::new(PlanCache::new(DEFAULT_REC_PLAN_CACHE)),
+            cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_REC_PLAN_CACHE)),
         })
     }
 
@@ -191,12 +190,12 @@ impl RecInferenceSession {
     /// Sets how many compiled plans (one per input shape) are kept in memory.
     /// The least recently used plan is dropped when the limit is exceeded.
     pub fn set_plan_cache_capacity(&self, capacity: usize) {
-        self.cache.borrow_mut().set_capacity(capacity);
+        crate::onnx_model::lock_cache(&self.cache).set_capacity(capacity);
     }
 
     /// Returns the number of compiled plans currently cached.
     pub fn cached_plan_count(&self) -> usize {
-        self.cache.borrow().len()
+        crate::onnx_model::lock_cache(&self.cache).len()
     }
 
     fn runnable_for_dims(
@@ -204,7 +203,7 @@ impl RecInferenceSession {
         batch_size: usize,
         width: u32,
     ) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = self.cache.borrow_mut().get((batch_size, width)) {
+        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get((batch_size, width)) {
             return Ok(plan);
         }
 
@@ -236,9 +235,7 @@ impl RecInferenceSession {
             .into_runnable()?;
         log::debug!("[RecInfer] Compiled plan in {:?}", compile_start.elapsed());
 
-        self.cache
-            .borrow_mut()
-            .insert((batch_size, width), Arc::clone(&plan));
+        crate::onnx_model::lock_cache(&self.cache).insert((batch_size, width), Arc::clone(&plan));
 
         Ok(plan)
     }

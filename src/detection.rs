@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -21,7 +20,7 @@ pub struct DetInferenceOutput {
 #[derive(Debug)]
 pub struct DetInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<PlanCache<(u32, u32)>>,
+    cache: std::sync::Mutex<PlanCache<(u32, u32)>>,
 }
 
 impl DetInferenceSession {
@@ -55,7 +54,7 @@ impl DetInferenceSession {
         log::debug!("[DetInfer] Detection model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: RefCell::new(PlanCache::new(DEFAULT_DET_PLAN_CACHE)),
+            cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_DET_PLAN_CACHE)),
         })
     }
 
@@ -92,16 +91,16 @@ impl DetInferenceSession {
     /// Sets how many compiled plans (one per input shape) are kept in memory.
     /// The least recently used plan is dropped when the limit is exceeded.
     pub fn set_plan_cache_capacity(&self, capacity: usize) {
-        self.cache.borrow_mut().set_capacity(capacity);
+        crate::onnx_model::lock_cache(&self.cache).set_capacity(capacity);
     }
 
     /// Returns the number of compiled plans currently cached.
     pub fn cached_plan_count(&self) -> usize {
-        self.cache.borrow().len()
+        crate::onnx_model::lock_cache(&self.cache).len()
     }
 
     fn runnable_for_dims(&self, width: u32, height: u32) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = self.cache.borrow_mut().get((width, height)) {
+        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get((width, height)) {
             return Ok(plan);
         }
 
@@ -131,9 +130,7 @@ impl DetInferenceSession {
             .into_optimized()?
             .into_runnable()?;
 
-        self.cache
-            .borrow_mut()
-            .insert((width, height), Arc::clone(&plan));
+        crate::onnx_model::lock_cache(&self.cache).insert((width, height), Arc::clone(&plan));
 
         Ok(plan)
     }

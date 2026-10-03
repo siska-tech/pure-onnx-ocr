@@ -471,3 +471,46 @@ fn in_memory_models_match_file_based_engine() {
         .collect();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn engine_can_be_shared_between_threads() {
+    let (Some(det), Some(rec), Some(image_path)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        sample_image(),
+    ) else {
+        return;
+    };
+    let engine = std::sync::Arc::new(
+        OcrEngineBuilder::new()
+            .det_model_dir(&det)
+            .rec_model_dir(&rec)
+            .build()
+            .unwrap(),
+    );
+    let image = std::sync::Arc::new(image::open(image_path).unwrap());
+    let expected: Vec<String> = engine
+        .run_from_image(&image)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+
+    let handles: Vec<_> = (0..3)
+        .map(|_| {
+            let engine = std::sync::Arc::clone(&engine);
+            let image = std::sync::Arc::clone(&image);
+            std::thread::spawn(move || {
+                engine
+                    .run_from_image(&image)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.text)
+                    .collect::<Vec<String>>()
+            })
+        })
+        .collect();
+    for handle in handles {
+        assert_eq!(handle.join().unwrap(), expected);
+    }
+}

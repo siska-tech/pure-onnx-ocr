@@ -16,7 +16,6 @@ use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::preprocessing::{IMAGENET_MEAN, IMAGENET_STD};
 use image::{imageops, imageops::FilterType, RgbImage};
 use ndarray::Array4;
-use std::cell::RefCell;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -119,7 +118,7 @@ fn label_to_angle(label: &str) -> Result<u32, OrientationError> {
 #[derive(Debug)]
 pub struct OrientationClassifier {
     base_model: InferenceModel,
-    cache: RefCell<PlanCache<usize>>,
+    cache: std::sync::Mutex<PlanCache<usize>>,
     resize: ClassifierResize,
     mean: [f32; 3],
     std: [f32; 3],
@@ -197,7 +196,7 @@ impl OrientationClassifier {
 
         Ok(Self {
             base_model: model,
-            cache: RefCell::new(PlanCache::new(2)),
+            cache: std::sync::Mutex::new(PlanCache::new(2)),
             resize,
             mean: config.normalize_mean.unwrap_or(IMAGENET_MEAN),
             std: config.normalize_std.unwrap_or(IMAGENET_STD),
@@ -298,7 +297,7 @@ impl OrientationClassifier {
     }
 
     fn plan_for_batch(&self, batch: usize) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = self.cache.borrow_mut().get(batch) {
+        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get(batch) {
             return Ok(plan);
         }
         let (width, height) = self.resize.input_dims();
@@ -321,7 +320,7 @@ impl OrientationClassifier {
             batch,
             compile_start.elapsed()
         );
-        self.cache.borrow_mut().insert(batch, Arc::clone(&plan));
+        crate::onnx_model::lock_cache(&self.cache).insert(batch, Arc::clone(&plan));
         Ok(plan)
     }
 }
