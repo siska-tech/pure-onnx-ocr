@@ -2,6 +2,7 @@ use crate::crop::{crop_quad, min_area_quad, RecCropMode};
 use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
 use crate::dictionary::{DictionaryError, RecDictionary};
+use crate::orientation::{rotate_ccw, unrotate_point, OrientationClassifier, OrientationError};
 use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
@@ -38,6 +39,13 @@ pub enum OcrError {
     ModelLoad { source: TractError, path: PathBuf },
     /// Loading the recognition dictionary failed.
     Dictionary { source: DictionaryError },
+    /// Loading an orientation classifier failed.
+    OrientationLoad {
+        source: OrientationError,
+        path: PathBuf,
+    },
+    /// Running an orientation classifier failed.
+    OrientationInference { source: TractError },
     /// Reading a PaddleOCR `inference.yml` failed.
     ModelConfig {
         source: PaddleConfigError,
@@ -79,6 +87,12 @@ impl fmt::Display for OcrError {
                 write!(f, "failed to load ONNX model {:?}: {}", path, source)
             }
             OcrError::Dictionary { source } => write!(f, "failed to load dictionary: {}", source),
+            OcrError::OrientationLoad { path, source } => {
+                write!(f, "failed to load orientation classifier {:?}: {}", path, source)
+            }
+            OcrError::OrientationInference { source } => {
+                write!(f, "orientation classification failed: {}", source)
+            }
             OcrError::ModelConfig { path, source } => {
                 write!(f, "failed to read model config {:?}: {}", path, source)
             }
@@ -231,6 +245,8 @@ impl Error for OcrError {
             OcrError::ModelLoad { .. } => None,
             OcrError::Dictionary { source } => Some(source),
             OcrError::ModelConfig { source, .. } => Some(source),
+            OcrError::OrientationLoad { source, .. } => Some(source),
+            OcrError::OrientationInference { .. } => None,
             OcrError::InvalidConfiguration { .. } => None,
             OcrError::ImageDecode { source, .. } => Some(source),
             OcrError::DetectionPreprocess { source } => Some(source),
@@ -294,6 +310,8 @@ pub struct OcrEngine {
     detection: DetectionPipeline,
     recognition: RecognitionPipeline,
     config: OcrEngineConfig,
+    doc_orientation: Option<OrientationClassifier>,
+    textline_orientation: Option<OrientationClassifier>,
 }
 
 /// Result of running the full OCR pipeline for a single detected region.
@@ -325,6 +343,8 @@ impl StageTimings {
 pub struct OcrTimings {
     pub total: Duration,
     pub image_decode: Duration,
+    /// Time spent in the document and text-line orientation classifiers.
+    pub orientation: Duration,
     pub detection: StageTimings,
     pub recognition: StageTimings,
 }
@@ -334,6 +354,7 @@ impl OcrTimings {
         Self {
             total: Duration::ZERO,
             image_decode: Duration::ZERO,
+            orientation: Duration::ZERO,
             detection: StageTimings::zero(),
             recognition: StageTimings::zero(),
         }
@@ -344,6 +365,10 @@ impl OcrTimings {
 pub struct OcrRunWithMetrics {
     pub results: Vec<OcrResult>,
     pub timings: OcrTimings,
+    /// Angle (0, 90, 180 or 270) the document orientation classifier
+    /// rotated the page by before detection, when that classifier is enabled.
+    /// Result polygons are always reported in the input image's coordinates.
+    pub doc_orientation_angle: Option<u32>,
 }
 
 impl OcrEngine {
@@ -407,6 +432,8 @@ impl OcrEngine {
             detection,
             recognition,
             config,
+            doc_orientation: None,
+            textline_orientation: None,
         }
     }
 
@@ -478,6 +505,32 @@ impl OcrEngine {
     ) -> Result<OcrRunWithMetrics, OcrError> {
         let pipeline_start = Instant::now();
         let mut timings = OcrTimings::new();
+        let original_dims = image.dimensions();
+
+        // Document orientation: rotate the page upright before detection.
+        let mut doc_orientation_angle = None;
+        let rotated_page;
+        let image = match &self.doc_orientation {
+            Some(classifier) => {
+                let start = Instant::now();
+                let rgb = image.to_rgb8();
+                let angle = classifier
+                    .classify(std::slice::from_ref(&rgb))
+                    .map_err(|source| OcrError::OrientationInference { source })?
+                    .first()
+                    .map(|prediction| prediction.angle)
+                    .unwrap_or(0);
+                doc_orientation_angle = Some(angle);
+                timings.orientation += start.elapsed();
+                if angle == 0 {
+                    image
+                } else {
+                    rotated_page = DynamicImage::ImageRgb8(rotate_ccw(&rgb, angle));
+                    &rotated_page
+                }
+            }
+            None => image,
+        };
         let image_dims = image.dimensions();
 
         let (polygons, detection_timings) = self
@@ -490,12 +543,31 @@ impl OcrEngine {
             return Ok(OcrRunWithMetrics {
                 results: Vec::new(),
                 timings,
+                doc_orientation_angle,
             });
         }
 
         let crop_start = Instant::now();
-        let crops = self.crop_regions(image, &polygons, image_dims);
+        let mut crops = self.crop_regions(image, &polygons, image_dims);
         let crop_elapsed = crop_start.elapsed();
+
+        // Text-line orientation: turn upside-down crops by 180 degrees.
+        if let Some(classifier) = &self.textline_orientation {
+            let start = Instant::now();
+            let chunk = self.config.rec_batch_size.max(1);
+            for (chunk_index, batch) in crops.clone().chunks(chunk).enumerate() {
+                let predictions = classifier
+                    .classify(batch)
+                    .map_err(|source| OcrError::OrientationInference { source })?;
+                for (offset, prediction) in predictions.iter().enumerate() {
+                    if prediction.angle == 180 {
+                        let index = chunk_index * chunk + offset;
+                        crops[index] = imageops::rotate180(&crops[index]);
+                    }
+                }
+            }
+            timings.orientation += start.elapsed();
+        }
         let (sequences, mut recognition_timings) = self
             .recognition
             .run_with_timings(&crops, self.config.rec_batch_size)?;
@@ -515,14 +587,37 @@ impl OcrEngine {
             .map(|(polygon, sequence)| OcrResult {
                 text: sequence.text,
                 confidence: sequence.confidence,
-                bounding_box: polygon,
+                bounding_box: match doc_orientation_angle {
+                    Some(angle) if angle != 0 => unrotate_polygon(&polygon, angle, original_dims),
+                    _ => polygon,
+                },
             })
             .collect();
 
         timings.total = pipeline_start.elapsed();
 
-        Ok(OcrRunWithMetrics { results, timings })
+        Ok(OcrRunWithMetrics {
+            results,
+            timings,
+            doc_orientation_angle,
+        })
     }
+}
+
+fn unrotate_polygon(polygon: &Polygon<f64>, angle: u32, original_dims: (u32, u32)) -> Polygon<f64> {
+    let map = |line: &geo_types::LineString<f64>| {
+        line.coords()
+            .map(|c| {
+                let (x, y) = unrotate_point(c.x, c.y, angle, original_dims);
+                geo_types::Coord { x, y }
+            })
+            .collect::<Vec<_>>()
+            .into()
+    };
+    Polygon::new(
+        map(polygon.exterior()),
+        polygon.interiors().iter().map(map).collect(),
+    )
 }
 
 /// File name of the ONNX graph inside a PaddleOCR 3.x model directory.
@@ -558,6 +653,8 @@ pub struct OcrEngineBuilder {
     rec_batch_size: usize,
     rec_use_space_char: bool,
     rec_crop_mode: RecCropMode,
+    doc_orientation_dir: Option<PathBuf>,
+    textline_orientation_dir: Option<PathBuf>,
     det_plan_cache_capacity: usize,
     rec_plan_cache_capacity: usize,
 }
@@ -581,6 +678,8 @@ impl Default for OcrEngineBuilder {
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
             rec_use_space_char: true,
             rec_crop_mode: RecCropMode::default(),
+            doc_orientation_dir: None,
+            textline_orientation_dir: None,
             det_plan_cache_capacity: crate::detection::DEFAULT_DET_PLAN_CACHE,
             rec_plan_cache_capacity: crate::recognition::DEFAULT_REC_PLAN_CACHE,
         }
@@ -736,6 +835,23 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Enables the document orientation classifier
+    /// (`PP-LCNet_x1_0_doc_ori`): the page is classified as rotated by 0, 90,
+    /// 180 or 270 degrees and turned upright before detection. Result
+    /// polygons are mapped back to the input image's coordinates.
+    pub fn doc_orientation_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        self.doc_orientation_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Enables the text-line orientation classifier
+    /// (`PP-LCNet_x*_textline_ori`): every cropped line predicted as
+    /// upside down is rotated by 180 degrees before recognition.
+    pub fn textline_orientation_model_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        self.textline_orientation_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
     /// Limits how many compiled inference plans are cached per model.
     ///
     /// `tract` compiles one plan per input shape (detection: image size,
@@ -833,7 +949,18 @@ impl OcrEngineBuilder {
         }
         config.rec_postprocessor.blank_id = dictionary.blank_id();
 
-        Ok(OcrEngine::new(
+        let doc_orientation = self
+            .doc_orientation_dir
+            .as_deref()
+            .map(load_orientation_classifier)
+            .transpose()?;
+        let textline_orientation = self
+            .textline_orientation_dir
+            .as_deref()
+            .map(load_orientation_classifier)
+            .transpose()?;
+
+        let mut engine = OcrEngine::new(
             det_model_path,
             rec_model_path,
             dictionary_path,
@@ -841,8 +968,18 @@ impl OcrEngineBuilder {
             rec_session,
             dictionary,
             config,
-        ))
+        );
+        engine.doc_orientation = doc_orientation;
+        engine.textline_orientation = textline_orientation;
+        Ok(engine)
     }
+}
+
+fn load_orientation_classifier(dir: &Path) -> Result<OrientationClassifier, OcrError> {
+    OrientationClassifier::from_model_dir(dir).map_err(|source| OcrError::OrientationLoad {
+        source,
+        path: dir.to_path_buf(),
+    })
 }
 
 fn load_model_config(path: &Path) -> Result<PaddleInferenceConfig, OcrError> {

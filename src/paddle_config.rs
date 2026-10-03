@@ -64,6 +64,14 @@ pub struct PaddleInferenceConfig {
     pub det_max_candidates: Option<usize>,
     /// `PostProcess.character_dict` (recognition only).
     pub character_dict: Option<Vec<String>>,
+    /// `ResizeImage.size` as `[width, height]` (classification models).
+    pub cls_resize_size: Option<[u32; 2]>,
+    /// `ResizeImage.resize_short` (classification models).
+    pub cls_resize_short: Option<u32>,
+    /// `CropImage.size`, a centre crop applied after resizing.
+    pub cls_crop_size: Option<u32>,
+    /// `PostProcess.Topk.label_list` (classification models).
+    pub label_list: Option<Vec<String>>,
 }
 
 /// Errors produced while reading an `inference.yml` file.
@@ -144,6 +152,30 @@ impl PaddleInferenceConfig {
                         config.normalize_std = Some(float_triplet("NormalizeImage.std", std)?);
                     }
                 }
+                if let Some(resize) = op.get("ResizeImage") {
+                    if let Some(size) = resize.get("size") {
+                        let items = scalar_list("ResizeImage.size", size)?;
+                        if items.len() != 2 {
+                            return Err(PaddleConfigError::InvalidValue {
+                                key: "ResizeImage.size",
+                                message: format!("expected 2 entries, found {}", items.len()),
+                            });
+                        }
+                        config.cls_resize_size = Some([
+                            parse_u32("ResizeImage.size", items[0])?,
+                            parse_u32("ResizeImage.size", items[1])?,
+                        ]);
+                    }
+                    if let Some(short) = resize.get("resize_short").and_then(Yaml::as_str) {
+                        config.cls_resize_short =
+                            Some(parse_u32("ResizeImage.resize_short", short)?);
+                    }
+                }
+                if let Some(crop) = op.get("CropImage") {
+                    if let Some(size) = crop.get("size").and_then(Yaml::as_str) {
+                        config.cls_crop_size = Some(parse_u32("CropImage.size", size)?);
+                    }
+                }
                 if let Some(resize) = op.get("RecResizeImg") {
                     if let Some(shape) = resize.get("image_shape") {
                         config.rec_image_shape =
@@ -171,6 +203,10 @@ impl PaddleInferenceConfig {
                 }
                 None => None,
             };
+            if let Some(labels) = post.get("Topk").and_then(|t| t.get("label_list")) {
+                let labels = scalar_list("PostProcess.Topk.label_list", labels)?;
+                config.label_list = Some(labels.into_iter().map(str::to_string).collect());
+            }
             if let Some(dict) = post.get("character_dict") {
                 let items = dict
                     .as_seq()
@@ -234,6 +270,33 @@ fn parse_number(raw: &str) -> Option<f64> {
         return Some(num / den);
     }
     raw.trim().parse::<f64>().ok()
+}
+
+fn parse_u32(key: &'static str, raw: &str) -> Result<u32, PaddleConfigError> {
+    raw.parse::<u32>()
+        .map_err(|_| PaddleConfigError::InvalidValue {
+            key,
+            message: format!("`{}` is not an unsigned integer", raw),
+        })
+}
+
+fn scalar_list<'a>(key: &'static str, node: &'a Yaml) -> Result<Vec<&'a str>, PaddleConfigError> {
+    let items = node
+        .as_seq()
+        .ok_or_else(|| PaddleConfigError::InvalidValue {
+            key,
+            message: "expected a sequence".to_string(),
+        })?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .ok_or_else(|| PaddleConfigError::InvalidValue {
+                    key,
+                    message: "expected scalar entries".to_string(),
+                })
+        })
+        .collect()
 }
 
 fn float_triplet(key: &'static str, node: &Yaml) -> Result<[f32; 3], PaddleConfigError> {
@@ -676,6 +739,67 @@ mod tests {
         assert_eq!(config.det_unclip_ratio, Some(1.4));
         assert_eq!(config.det_max_candidates, Some(3000));
         assert!(config.character_dict.is_none());
+    }
+
+    #[test]
+    fn parses_classifier_config() {
+        let yml = "Global:
+  model_name: PP-LCNet_x1_0_doc_ori
+PreProcess:
+  transform_ops:
+  - ResizeImage:
+      resize_short: 256
+  - CropImage:
+      size: 224
+  - NormalizeImage:
+      channel_num: 3
+      mean:
+      - 0.485
+      - 0.456
+      - 0.406
+      order: ''
+      scale: 0.00392156862745098
+      std:
+      - 0.229
+      - 0.224
+      - 0.225
+  - ToCHWImage: null
+PostProcess:
+  Topk:
+    topk: 1
+    label_list:
+    - '0'
+    - '90'
+    - '180'
+    - '270'
+";
+        let config = PaddleInferenceConfig::from_yaml_str(yml).unwrap();
+        assert_eq!(config.cls_resize_short, Some(256));
+        assert_eq!(config.cls_crop_size, Some(224));
+        assert_eq!(config.normalize_mean, Some([0.485, 0.456, 0.406]));
+        assert_eq!(
+            config.label_list,
+            Some(vec!["0".into(), "90".into(), "180".into(), "270".into()])
+        );
+
+        let yml = "PreProcess:
+  transform_ops:
+  - ResizeImage:
+      size:
+      - 160
+      - 80
+PostProcess:
+  Topk:
+    label_list:
+    - 0_degree
+    - 180_degree
+";
+        let config = PaddleInferenceConfig::from_yaml_str(yml).unwrap();
+        assert_eq!(config.cls_resize_size, Some([160, 80]));
+        assert_eq!(
+            config.label_list,
+            Some(vec!["0_degree".into(), "180_degree".into()])
+        );
     }
 
     #[test]

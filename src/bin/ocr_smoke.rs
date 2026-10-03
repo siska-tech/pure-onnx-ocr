@@ -68,6 +68,12 @@ fn run() -> Result<(), RunError> {
     if let Some(mode) = cli.crop_mode {
         builder = builder.rec_crop_mode(mode);
     }
+    if let Some(dir) = &cli.doc_ori_model_dir {
+        builder = builder.doc_orientation_model_dir(dir);
+    }
+    if let Some(dir) = &cli.textline_ori_model_dir {
+        builder = builder.textline_orientation_model_dir(dir);
+    }
 
     if let Some(limit) = cli.det_limit_side_len {
         builder = builder.det_limit_side_len(limit);
@@ -86,23 +92,28 @@ fn run() -> Result<(), RunError> {
         .as_ref()
         .expect("image path should be present when help is not requested");
 
-    let (results, total_duration) = if cli.benchmark {
-        let run = engine
-            .run_with_metrics_from_path(image_path)
-            .map_err(RunError::from)?;
+    let start = Instant::now();
+    let run = engine
+        .run_with_metrics_from_path(image_path)
+        .map_err(RunError::from)?;
+    let total_duration = start.elapsed();
+    if cli.benchmark {
         print_benchmark_report(image_path, &run);
-        (run.results, run.timings.total)
-    } else {
-        let start = Instant::now();
-        let run_results = engine.run_from_path(image_path).map_err(RunError::from)?;
-        (run_results, start.elapsed())
-    };
+    }
+    let doc_orientation_angle = run.doc_orientation_angle;
+    let results = run.results;
 
     println!("Input image: {}", image_path.display());
     println!("Detection model: {}", engine.det_model_path().display());
     println!("Recognition model: {}", engine.rec_model_path().display());
     println!("Dictionary: {}", engine.dictionary_path().display());
     println!("Recognition batch size: {}", engine.rec_batch_size());
+    if let Some(angle) = doc_orientation_angle {
+        println!(
+            "Document orientation: {} degrees (rotated upright before detection)",
+            angle
+        );
+    }
     println!("Total time: {:.3} seconds", total_duration.as_secs_f64());
 
     if results.is_empty() {
@@ -156,6 +167,8 @@ struct Cli {
     det_max_side_limit: Option<u32>,
     det_params_from_config: bool,
     crop_mode: Option<RecCropMode>,
+    doc_ori_model_dir: Option<PathBuf>,
+    textline_ori_model_dir: Option<PathBuf>,
     det_limit_side_len: Option<u32>,
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
@@ -187,6 +200,8 @@ impl Cli {
             det_max_side_limit: None,
             det_params_from_config: false,
             crop_mode: None,
+            doc_ori_model_dir: None,
+            textline_ori_model_dir: None,
             det_limit_side_len: None,
             det_unclip_ratio: None,
             rec_batch_size: None,
@@ -262,6 +277,14 @@ impl Cli {
                 }
                 "--det-params-from-config" => {
                     cli.det_params_from_config = true;
+                }
+                "--doc-ori-model-dir" => {
+                    let value = next_value("--doc-ori-model-dir", &mut iter)?;
+                    cli.doc_ori_model_dir = Some(PathBuf::from(value));
+                }
+                "--textline-ori-model-dir" => {
+                    let value = next_value("--textline-ori-model-dir", &mut iter)?;
+                    cli.textline_ori_model_dir = Some(PathBuf::from(value));
                 }
                 "--crop-mode" => {
                     let value = next_value("--crop-mode", &mut iter)?;
@@ -382,6 +405,14 @@ impl Cli {
             "      --det-params-from-config  Use thresh/box_thresh/unclip_ratio from the detection inference.yml\n",
         );
         text.push_str(
+            "      --doc-ori-model-dir DIR   Document orientation classifier (PP-LCNet_x1_0_doc_ori) directory
+",
+        );
+        text.push_str(
+            "      --textline-ori-model-dir DIR  Text-line orientation classifier (PP-LCNet_x*_textline_ori) directory
+",
+        );
+        text.push_str(
             "      --no-space-char           Do not append the space class to the dictionary\n",
         );
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
@@ -452,6 +483,7 @@ fn print_benchmark_report(image_path: &PathBuf, run: &OcrRunWithMetrics) {
     println!("[INFO] benchmark.image={}", image_path.display());
     print_timing_line("benchmark.total_seconds", run.timings.total);
     print_timing_line("benchmark.image_decode_seconds", run.timings.image_decode);
+    print_timing_line("benchmark.orientation_seconds", run.timings.orientation);
     print_stage_timings("benchmark.det", &run.timings.detection);
     print_stage_timings("benchmark.rec", &run.timings.recognition);
 }

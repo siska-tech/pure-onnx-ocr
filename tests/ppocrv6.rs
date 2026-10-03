@@ -320,3 +320,111 @@ fn rotated_crops_read_tilted_text() {
     );
     assert!(rotated_hits > axis_hits);
 }
+
+fn classifier_dir(name: &str) -> Option<PathBuf> {
+    let dir = fixture_dir()?.join("models").join(name);
+    if dir.join("inference.onnx").exists() && dir.join("inference.yml").exists() {
+        Some(dir)
+    } else {
+        eprintln!("{} fixtures not found; skipping", name);
+        None
+    }
+}
+
+#[test]
+fn doc_orientation_restores_rotated_pages() {
+    let (Some(det), Some(rec), Some(doc_ori), Some(image_path)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        classifier_dir("PP-LCNet_x1_0_doc_ori"),
+        sample_image(),
+    ) else {
+        return;
+    };
+    let engine = OcrEngineBuilder::new()
+        .det_model_dir(&det)
+        .rec_model_dir(&rec)
+        .doc_orientation_model_dir(&doc_ori)
+        .build()
+        .unwrap();
+    let upright = image::open(image_path).unwrap().to_rgb8();
+
+    // Rotating the page clockwise by `cw` degrees must be detected as needing
+    // a counter-clockwise rotation of the same angle.
+    for (cw, rotated) in [
+        (90u32, image::imageops::rotate90(&upright)),
+        (180, image::imageops::rotate180(&upright)),
+        (270, image::imageops::rotate270(&upright)),
+    ] {
+        let run = engine
+            .run_with_metrics_from_image(&image::DynamicImage::ImageRgb8(rotated.clone()))
+            .unwrap();
+        assert_eq!(
+            run.doc_orientation_angle,
+            Some(cw),
+            "page rotated {} cw",
+            cw
+        );
+        let texts: Vec<&str> = run.results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("ZHANGQIWEI")),
+            "rotated {} cw: {:?}",
+            cw,
+            texts
+        );
+        // Polygons are reported in the coordinates of the rotated input.
+        let (rw, rh) = rotated.dimensions();
+        for result in &run.results {
+            for point in result.bounding_box.exterior().points() {
+                assert!(point.x() >= -1.0 && point.x() <= rw as f64 + 1.0);
+                assert!(point.y() >= -1.0 && point.y() <= rh as f64 + 1.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn textline_orientation_fixes_upside_down_lines() {
+    let (Some(det), Some(rec), Some(textline_ori), Some(image_path)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        classifier_dir("PP-LCNet_x1_0_textline_ori"),
+        sample_image(),
+    ) else {
+        return;
+    };
+    let flipped = image::DynamicImage::ImageRgb8(image::imageops::rotate180(
+        &image::open(image_path).unwrap().to_rgb8(),
+    ));
+    let read = |with_classifier: bool| {
+        let mut builder = OcrEngineBuilder::new()
+            .det_model_dir(&det)
+            .rec_model_dir(&rec);
+        if with_classifier {
+            builder = builder.textline_orientation_model_dir(&textline_ori);
+        }
+        builder
+            .build()
+            .unwrap()
+            .run_from_image(&flipped)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let without = read(false);
+    let with = read(true);
+    eprintln!("--- without ---\n{}\n--- with ---\n{}", without, with);
+    // Short all-uppercase crops such as `TAIYUAN` are nearly point-symmetric
+    // and are not always recognised as upside down, so check mixed lines.
+    for expected in ["BOARDING", "ZHANGQIWEI", "张祺伟", "登机牌", "GATES CLOSE"] {
+        assert!(
+            with.contains(expected),
+            "expected `{}` in:\n{}",
+            expected,
+            with
+        );
+        assert!(!without.contains(expected));
+    }
+}

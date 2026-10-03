@@ -17,6 +17,7 @@ pub mod detection;
 pub mod dictionary;
 pub mod engine;
 mod onnx_model;
+pub mod orientation;
 pub mod paddle_config;
 pub mod postprocessing;
 pub mod preprocessing;
@@ -37,6 +38,7 @@ pub use engine::{
 /// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
 /// PaddleOCR `inference.yml` reader used for PP-OCRv5 / PP-OCRv6 model directories.
+pub use orientation::{OrientationClassifier, OrientationError, OrientationPrediction};
 pub use paddle_config::{ColorOrder, PaddleConfigError, PaddleInferenceConfig};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,
