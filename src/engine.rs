@@ -455,8 +455,9 @@ impl OcrEngine {
             source,
             path: path_ref.to_path_buf(),
         })?;
+        let image_decode = decode_start.elapsed();
         let mut run = self.run_with_metrics_from_image_impl(&image)?;
-        run.timings.image_decode = decode_start.elapsed();
+        run.timings.image_decode = image_decode;
         run.timings.total = overall_start.elapsed();
         Ok(run)
     }
@@ -556,10 +557,14 @@ impl OcrEngine {
             let start = Instant::now();
             let chunk = self.config.rec_batch_size.max(1);
             for (chunk_index, batch) in crops.clone().chunks(chunk).enumerate() {
+                // Pad the last chunk to the full batch size so a single
+                // compiled plan serves every call.
+                let mut padded = batch.to_vec();
+                padded.resize(chunk, batch[batch.len() - 1].clone());
                 let predictions = classifier
-                    .classify(batch)
+                    .classify(&padded)
                     .map_err(|source| OcrError::OrientationInference { source })?;
-                for (offset, prediction) in predictions.iter().enumerate() {
+                for (offset, prediction) in predictions.iter().take(batch.len()).enumerate() {
                     if prediction.angle == 180 {
                         let index = chunk_index * chunk + offset;
                         crops[index] = imageops::rotate180(&crops[index]);

@@ -105,7 +105,13 @@ impl RecInferenceSession {
         }
 
         let plan = self.runnable_for_dims(batch_size, width as u32)?;
+        let run_start = std::time::Instant::now();
         let outputs = plan.run(tvec!(batch.tensor.clone().into()))?;
+        log::debug!(
+            "[RecInfer] Ran batch {:?} in {:?}",
+            tensor_shape,
+            run_start.elapsed()
+        );
         let output_tensor = outputs
             .into_iter()
             .next()
@@ -200,11 +206,13 @@ impl RecInferenceSession {
             ),
         )?;
 
+        let compile_start = std::time::Instant::now();
         let plan = model
             .into_typed()?
             .into_decluttered()?
             .into_optimized()?
             .into_runnable()?;
+        log::debug!("[RecInfer] Compiled plan in {:?}", compile_start.elapsed());
 
         self.cache
             .borrow_mut()

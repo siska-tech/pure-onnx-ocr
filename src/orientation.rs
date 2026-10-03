@@ -209,7 +209,13 @@ impl OrientationClassifier {
 
         let plan = self.plan_for_batch(images.len())?;
         let tensor: Tensor = batch.into_dyn().into();
+        let run_start = std::time::Instant::now();
         let outputs = plan.run(tvec!(tensor.into()))?;
+        log::debug!(
+            "[Orientation] classified {} image(s) in {:?}",
+            images.len(),
+            run_start.elapsed()
+        );
         let output = outputs
             .into_iter()
             .next()
@@ -281,11 +287,17 @@ impl OrientationClassifier {
                 tvec![batch, 3, height as usize, width as usize],
             ),
         )?;
+        let compile_start = std::time::Instant::now();
         let plan = model
             .into_typed()?
             .into_decluttered()?
             .into_optimized()?
             .into_runnable()?;
+        log::debug!(
+            "[Orientation] compiled plan for batch {} in {:?}",
+            batch,
+            compile_start.elapsed()
+        );
         self.cache.borrow_mut().insert(batch, Arc::clone(&plan));
         Ok(plan)
     }
