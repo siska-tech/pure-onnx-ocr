@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pure-onnx-ocr web demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; max-width: 1100px; }
+    #status { margin: 8px 0; color: #555; }
+    #layout { display: flex; gap: 16px; flex-wrap: wrap; }
+    canvas { max-width: 100%; border: 1px solid #ccc; }
+    ol { font-family: ui-monospace, monospace; font-size: 14px; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>pure-onnx-ocr (WebAssembly)</h1>
+  <p>
+    Models are loaded from <code>models/</code> next to this page
+    (see <code>examples/web/README.md</code>). Everything runs locally in the browser.
+  </p>
+  <label>Model:
+    <select id="tier">
+      <option value="tiny">PP-OCRv6 tiny</option>
+      <option value="small">PP-OCRv6 small</option>
+      <option value="medium">PP-OCRv6 medium</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="textline"> text-line orientation</label>
+  <label><input type="checkbox" id="doc"> document orientation</label>
+  <input type="file" id="file" accept="image/*">
+  <div id="status">Choose an image.</div>
+  <div id="layout">
+    <canvas id="canvas"></canvas>
+    <ol id="texts"></ol>
+  </div>
+  <script type="module">
+    const $ = (id) => document.getElementById(id);
+    const status = (text, isError = false) => {
+      $("status").textContent = text;
+      $("status").className = isError ? "error" : "";
+    };
+
+    let worker = null;
+    let loadedKey = null;
+
+    function request(message, transfer = []) {
+      return new Promise((resolve, reject) => {
+        worker.onmessage = ({ data }) =>
+          data.type === "error" ? reject(new Error(data.message)) : resolve(data);
+        worker.postMessage(message, transfer);
+      });
+    }
+
+    async function ensureEngine() {
+      const tier = $("tier").value;
+      const key = `${tier}|${$("textline").checked}|${$("doc").checked}`;
+      if (worker && loadedKey === key) return;
+      worker?.terminate();
+      worker = new Worker("./worker.js", { type: "module" });
+      status(`Loading PP-OCRv6 ${tier}...`);
+      const loaded = await request({
+        type: "load",
+        det: `models/ppocrv6/${tier}_det`,
+        rec: `models/ppocrv6/${tier}_rec`,
+        textlineOrientation: $("textline").checked ? "models/PP-LCNet_x0_25_textline_ori" : null,
+        docOrientation: $("doc").checked ? "models/PP-LCNet_x1_0_doc_ori" : null,
+      });
+      loadedKey = key;
+      status(`Models loaded in ${loaded.ms.toFixed(0)} ms.`);
+    }
+
+    function draw(bitmap, results) {
+      const canvas = $("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0);
+      ctx.lineWidth = Math.max(2, bitmap.width / 400);
+      ctx.strokeStyle = "#e5007d";
+      for (const result of results) {
+        if (result.box.length !== 4) continue;
+        ctx.beginPath();
+        result.box.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+        ctx.stroke();
+      }
+      $("texts").replaceChildren(
+        ...results.map((r) => {
+          const li = document.createElement("li");
+          li.textContent = `${r.text}  (${r.confidence.toFixed(3)})`;
+          return li;
+        })
+      );
+    }
+
+    async function recognize(buffer) {
+      await ensureEngine();
+      status("Running OCR...");
+      const bitmap = await createImageBitmap(new Blob([buffer]));
+      const output = await request({ type: "run", image: buffer }, [buffer]);
+      draw(bitmap, output.results);
+      const t = output.timings;
+      status(
+        `${output.results.length} regions in ${t.total.toFixed(0)} ms ` +
+          `(detection ${t.detection.toFixed(0)} ms, recognition ${t.recognition.toFixed(0)} ms` +
+          `${t.orientation ? `, orientation ${t.orientation.toFixed(0)} ms` : ""})` +
+          (output.docOrientationAngle ? `, page rotated ${output.docOrientationAngle}°` : "")
+      );
+      // Exposed for automated checks (see examples/web/README.md).
+      window.ocrOutput = output;
+      return output;
+    }
+
+    $("file").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        await recognize(await file.arrayBuffer());
+      } catch (error) {
+        status(error.message, true);
+      }
+    });
+
+    // ?image=URL[&tier=small&textline=1&doc=1] runs OCR on page load.
+    const params = new URLSearchParams(location.search);
+    if (params.get("tier")) $("tier").value = params.get("tier");
+    $("textline").checked = params.get("textline") === "1";
+    $("doc").checked = params.get("doc") === "1";
+    if (params.get("image")) {
+      fetch(params.get("image"))
+        .then((r) => r.arrayBuffer())
+        .then(recognize)
+        .catch((error) => {
+          window.ocrError = error.message;
+          status(error.message, true);
+        });
+    }
+  </script>
+</body>
+</html>
