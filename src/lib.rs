@@ -26,9 +26,9 @@ pub mod recognition;
 mod threading;
 mod time;
 
-/// Re-export of the CTC decoding utilities so applications can customise
-/// post-processing while keeping consistent types.
+/// Rotation-aware crop geometry and crop mode selection.
 pub use crop::{crop_quad, min_area_quad, Quad, RecCropMode};
+/// CTC decoding utilities for custom recognition postprocessing.
 pub use ctc::{CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence};
 /// Re-export of detection inference helpers for direct DBNet integration.
 pub use detection::{DetInferenceOutput, DetInferenceSession};
@@ -40,8 +40,9 @@ pub use engine::{
 };
 /// Geometry primitives surfaced at the crate root for convenience.
 pub use geo_types::{Point, Polygon};
-/// PaddleOCR `inference.yml` reader used for PP-OCRv5 / PP-OCRv6 model directories.
+/// Optional page and text-line orientation classification.
 pub use orientation::{OrientationClassifier, OrientationError, OrientationPrediction};
+/// PaddleOCR `inference.yml` reader used for PP-OCRv5 / PP-OCRv6 model directories.
 pub use paddle_config::{ColorOrder, PaddleConfigError, PaddleInferenceConfig};
 pub use postprocessing::{
     DetPolygonScaler, DetPolygonScalerConfig, DetPolygonUnclipper, DetPolygonUnclipperConfig,

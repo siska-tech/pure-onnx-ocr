@@ -12,8 +12,8 @@ use tract_onnx::prelude::*;
 /// `[1, 3, 736, 736]` is set, analysis fails with
 /// `Impossible to unify Sym(DynamicDimension.0) with Val(1)`. Clearing the
 /// facts of every non-input, non-constant outlet lets `tract` re-derive the
-/// shapes from the concrete input instead. Older exports (PP-OCRv5) carry no
-/// such hints, so this is a no-op for them.
+/// shapes from the concrete input instead. The same reset is applied to older
+/// exports (PP-OCRv5), even when they do not contain conflicting shape hints.
 pub(crate) fn load_paddle_onnx(model_path: &Path) -> TractResult<InferenceModel> {
     let mut model = tract_onnx::onnx()
         .with_ignore_output_shapes(true)
@@ -33,6 +33,8 @@ pub(crate) fn load_paddle_onnx_from_bytes(bytes: &[u8]) -> TractResult<Inference
     Ok(model)
 }
 
+/// Retains graph inputs and constant weights while resetting inferred facts.
+/// Callers must bind concrete input dimensions before compiling a runnable plan.
 fn clear_intermediate_facts(model: &mut InferenceModel) -> TractResult<()> {
     let inputs: Vec<OutletId> = model.input_outlets()?.to_vec();
     for node_id in 0..model.nodes().len() {
@@ -60,10 +62,13 @@ fn clear_intermediate_facts(model: &mut InferenceModel) -> TractResult<()> {
 #[derive(Debug)]
 pub(crate) struct PlanCache<K> {
     capacity: usize,
+    // Front = least recently used; back = most recently used. Arc lets an
+    // in-flight inference retain its plan even after the cache evicts it.
     entries: std::collections::VecDeque<(K, std::sync::Arc<TypedRunnableModel>)>,
 }
 
 impl<K: PartialEq + Copy> PlanCache<K> {
+    /// Creates an empty cache. Zero capacity is treated as one, not disabled.
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
@@ -71,6 +76,7 @@ impl<K: PartialEq + Copy> PlanCache<K> {
         }
     }
 
+    /// Applies a minimum capacity of one and immediately evicts excess entries.
     pub(crate) fn set_capacity(&mut self, capacity: usize) {
         self.capacity = capacity.max(1);
         while self.entries.len() > self.capacity {

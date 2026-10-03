@@ -151,7 +151,9 @@ impl OcrEngine {
     /// Runs OCR on an encoded image (PNG, JPEG, ...).
     ///
     /// Returns `[{ text, confidence, box, polygon }, ...]`: `box` is the rotated
-    /// 4-point rectangle (top-left first, clockwise), `polygon` the full outline.
+    /// 4-point rectangle (top-left first, clockwise). `polygon` contains the
+    /// engine's bounding-box exterior without its repeated closing point;
+    /// it is not the original detection contour. Coordinates are input pixels.
     pub fn run(&self, image: &[u8]) -> Result<Array, JsError> {
         let results = self.inner.run_from_bytes(image).map_err(to_js_error)?;
         results.iter().map(result_to_js).collect()

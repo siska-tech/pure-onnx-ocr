@@ -1,10 +1,19 @@
+//! Greedy Connectionist Temporal Classification (CTC) decoding.
+//!
+//! Each time step selects one class. Adjacent repetitions collapse, then
+//! blanks disappear: `a, a, blank, a` becomes `aa`. Dictionary positions must
+//! match the model's output classes, including the blank class.
+
 use crate::dictionary::RecDictionary;
 use ndarray::{s, Array3, Axis};
 
 /// Configuration options for greedy CTC decoding.
 #[derive(Debug, Clone, Default)]
 pub struct CtcGreedyDecoderConfig {
+    /// Class that separates repeated tokens without emitting text (default: 0).
     pub blank_id: usize,
+    /// Replacement for a selected class missing from the dictionary.
+    /// `None` (the default) makes such a class an error.
     pub fallback_token: Option<String>,
 }
 
@@ -60,9 +69,14 @@ impl std::error::Error for CtcGreedyDecoderError {}
 /// Result of decoding a single sequence.
 #[derive(Debug, Clone)]
 pub struct DecodedSequence {
+    /// Concatenated dictionary tokens after blank and repetition removal.
     pub text: String,
+    /// Emitted model class IDs, including IDs replaced by the fallback token.
     pub token_indices: Vec<usize>,
+    /// Mean probability of emitted tokens, excluding blanks and repetitions.
+    /// Empty output has confidence 1.0; this does not imply text was found.
     pub confidence: f32,
+    /// Number of emitted tokens replaced by the configured fallback.
     pub fallback_count: usize,
 }
 
@@ -73,10 +87,22 @@ pub struct CtcGreedyDecoder {
 }
 
 impl CtcGreedyDecoder {
+    /// Stores decoding options; class bounds are checked when decoding.
     pub fn new(config: CtcGreedyDecoderConfig) -> Self {
         Self { config }
     }
 
+    /// Decodes a `[batch, time, class]` tensor in batch order.
+    ///
+    /// `valid_timesteps` supplies one prefix length per sample to exclude
+    /// right-hand padding. Lengths exceeding the time dimension are clamped;
+    /// zero produces empty text. Rows resembling probability distributions
+    /// are used directly; other rows use softmax for confidence calculation.
+    /// Inputs are expected to contain finite scores.
+    ///
+    /// # Errors
+    /// Returns an error for an empty batch, an invalid blank ID, a mismatched
+    /// prefix-length count, or an unknown selected class without a fallback.
     pub fn decode(
         &self,
         logits: &Array3<f32>,
@@ -137,6 +163,8 @@ impl CtcGreedyDecoder {
                     }
                 }
 
+                // Some exports already include softmax. Applying it again
+                // would preserve argmax but distort the reported confidence.
                 let is_probability_distribution = min_value.is_finite()
                     && max_value.is_finite()
                     && min_value >= -1e-4
@@ -144,6 +172,7 @@ impl CtcGreedyDecoder {
                     && (row_sum - 1.0).abs() <= 1e-3;
 
                 if best_index == self.config.blank_id {
+                    // A blank breaks a run: a, blank, a must emit two tokens.
                     previous_symbol = None;
                     continue;
                 }
@@ -155,6 +184,8 @@ impl CtcGreedyDecoder {
                 let probability = if is_probability_distribution {
                     best_value.clamp(0.0, 1.0)
                 } else {
+                    // Subtract the maximum before exponentiation to avoid
+                    // overflow without changing the softmax probabilities.
                     let max_logit = best_value as f64;
                     let mut sum_exp = 0.0f64;
                     for value in step.iter() {
@@ -305,13 +336,13 @@ mod tests {
             .decode(&logits, &[1], &dictionary)
             .expect_err("blank id out of range should error");
 
-        matches!(
+        assert!(matches!(
             error,
             CtcGreedyDecoderError::BlankIdOutOfRange {
                 blank_id: 3,
                 class_count: 2
             }
-        );
+        ));
     }
 
     #[test]

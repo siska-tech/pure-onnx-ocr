@@ -2,7 +2,7 @@
 
 Author: Shion Watanabe  
 First version: 2025-11-09  
-Revised: 2026-10-03 (v0.2.0)  
+Revised: 2026-10-03 (v0.2.1)
 Repository: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CTC recognition models without relying on C/C++ runtimes. **PP-OCRv5 and PP-OCRv6 (tiny / small / medium) ONNX exports are supported.** The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
@@ -25,7 +25,7 @@ Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CT
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.2.0"
+pure_onnx_ocr = "0.2.1"
 image = "0.25"       # recommended for image I/O
 geo-types = "0.7"    # recommended for working with polygon results
 ```
@@ -255,6 +255,8 @@ Each English document mirrors the Japanese source to help international contribu
   - Browser WebAssembly support (in-memory inputs, wasm-bindgen bindings, demo).
   - Multi-threaded inference with batch size 1: whole pipeline 2.9-4.7x faster.
   - GitHub Actions CI and a fixture download script.
+- 2026-10-03: **v0.2.1**: fixed recognition region overflow and detection output
+  shape validation; added regression tests and expanded source documentation.
 
 ## Contributing
 
@@ -275,4 +277,3 @@ Licensed under `Apache-2.0`, aligning with PaddleOCR, OnnxOCR, and tract licensi
 - CI: GitHub Actions (`.github/workflows/ci.yml`) runs fmt, clippy, tests on Linux and Windows, an MSRV check and WebAssembly builds.
 - PP-OCRv6 tests (`tests/ppocrv6.rs`): the tiny pipeline runs by default; small and medium run with `cargo test --release --test ppocrv6 -- --ignored`.
 - Integration tests: provide PP-OCRv5 models and a demo image via the `PURE_ONNX_OCR_FIXTURE_DIR` environment variable or `tests/fixtures/`. See `tests/fixtures/README.md` for the expected directory structure. Tests skip automatically when fixtures are missing.
-

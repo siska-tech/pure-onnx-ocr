@@ -1,3 +1,9 @@
+//! Image-to-tensor conversion for detection and recognition.
+//!
+//! Detection stretches to dimensions rounded to multiples of 32; recognition
+//! resizes crops to a fixed height and pads on the right to a shared batch width.
+//! Tensors use NCHW order, while dimension pairs use `(width, height)`.
+
 use crate::paddle_config::ColorOrder;
 use image::{DynamicImage, GenericImageView, RgbImage};
 use ndarray::{s, Array4};
@@ -75,8 +81,11 @@ impl std::error::Error for DetPreProcessorError {}
 /// Result of detection preprocessing.
 #[derive(Debug, Clone)]
 pub struct PreprocessedDetInput {
+    /// Normalized `f32` tensor shaped `[1, 3, height, width]`.
     pub tensor: Tensor,
+    /// Actual resized image size `(width, height)`, after alignment.
     pub resized_dims: (u32, u32),
+    /// Uniform resize ratio before alignment; use `scale_xy` for coordinates.
     pub scale_ratio: f64,
     /// Per-axis scale `(resized_width / original_width, resized_height /
     /// original_height)`; differs slightly from `scale_ratio` because each
@@ -103,10 +112,13 @@ pub struct DetPreProcessor {
 }
 
 impl DetPreProcessor {
+    /// Stores resize and normalization settings for subsequent images.
     pub fn new(config: DetPreProcessorConfig) -> Self {
         Self { config }
     }
 
+    /// Resizes and normalizes an image, retaining the scales needed to map
+    /// detections back to the original. Returns an error for an empty image.
     pub fn process(
         &self,
         image: &DynamicImage,
@@ -315,12 +327,16 @@ impl std::error::Error for RecPreProcessorError {}
 /// Result of recognition preprocessing.
 #[derive(Debug, Clone)]
 pub struct PreprocessedRecBatch {
+    /// Normalized `f32` tensor shaped `[batch, 3, target_height, max_width]`.
     pub tensor: Tensor,
+    /// Unpadded resized width of each sample, in the same order as the tensor.
     pub valid_widths: Vec<u32>,
+    /// Shared tensor width including right-hand padding.
     pub max_width: u32,
 }
 
 impl PreprocessedRecBatch {
+    /// Fractions of the canvas occupied by each crop; zero for a zero-width canvas.
     pub fn valid_width_ratios(&self) -> Vec<f32> {
         if self.max_width == 0 {
             return vec![0.0; self.valid_widths.len()];
@@ -339,6 +355,7 @@ pub struct RecPreProcessor {
 }
 
 impl RecPreProcessor {
+    /// Stores crop normalization and batch-width settings.
     pub fn new(config: RecPreProcessorConfig) -> Self {
         Self { config }
     }
@@ -348,6 +365,9 @@ impl RecPreProcessor {
         &self.config
     }
 
+    /// Crops axis-aligned regions from an image, preserving their input order.
+    /// Empty images/regions, zero-area crops, out-of-bounds regions and zero
+    /// target dimensions are reported as preprocessing errors.
     pub fn process(
         &self,
         image: &DynamicImage,
@@ -371,10 +391,12 @@ impl RecPreProcessor {
                 return Err(RecPreProcessorError::ZeroArea { index });
             }
 
+            // Check origins first so the remaining-space subtraction is safe.
+            // Adding an untrusted width/height to an origin can overflow u32.
             if region.x >= img_w
                 || region.y >= img_h
-                || region.x + region.width > img_w
-                || region.y + region.height > img_h
+                || region.width > img_w - region.x
+                || region.height > img_h - region.y
             {
                 return Err(RecPreProcessorError::RegionOutOfBounds {
                     index,
@@ -398,6 +420,10 @@ impl RecPreProcessor {
     /// Builds a recognition batch from already cropped text images (for
     /// example the perspective-corrected crops produced by
     /// [`crate::crop::crop_quad`]).
+    ///
+    /// Samples retain their order. Each crop is resized to `target_height`,
+    /// capped to the allowed width, and padded on the right. Padding values
+    /// pass through the same normalization as image pixels.
     pub fn process_images(
         &self,
         crops: &[RgbImage],
@@ -747,6 +773,53 @@ mod tests {
         assert!((tensor[[0, 0, 10, (config.max_width - 1) as usize]] - pad).abs() < 1e-6);
         // Ensure padding column for second sample is untouched.
         assert!((tensor[[1, 1, 20, (config.max_width - 1) as usize]] - pad).abs() < 1e-6);
+    }
+
+    #[test]
+    fn recognition_region_overflow_width_is_error() {
+        let image = gradient_image(10, 10);
+        let preprocessor = RecPreProcessor::new(RecPreProcessorConfig::default());
+        let region = RecTextRegion {
+            x: 1,
+            y: 0,
+            width: u32::MAX,
+            height: 1,
+        };
+        let error = preprocessor.process(&image, &[region]).unwrap_err();
+        assert!(matches!(
+            error,
+            RecPreProcessorError::RegionOutOfBounds { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn recognition_region_overflow_height_is_error() {
+        let image = gradient_image(10, 10);
+        let preprocessor = RecPreProcessor::new(RecPreProcessorConfig::default());
+        let region = RecTextRegion {
+            x: 0,
+            y: 1,
+            width: 1,
+            height: u32::MAX,
+        };
+        let error = preprocessor.process(&image, &[region]).unwrap_err();
+        assert!(matches!(
+            error,
+            RecPreProcessorError::RegionOutOfBounds { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn recognition_region_touching_image_edges_is_valid() {
+        let image = gradient_image(10, 10);
+        let preprocessor = RecPreProcessor::new(RecPreProcessorConfig::default());
+        let region = RecTextRegion {
+            x: 1,
+            y: 1,
+            width: 9,
+            height: 9,
+        };
+        assert!(preprocessor.process(&image, &[region]).is_ok());
     }
 
     #[test]

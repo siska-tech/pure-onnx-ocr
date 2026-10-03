@@ -1,3 +1,10 @@
+//! High-level orchestration of the OCR stages.
+//!
+//! The builder resolves model/configuration sources. Each run optionally
+//! corrects page orientation, detects boxes, crops text, corrects line
+//! orientation, and recognizes batches. Returned boxes use the original
+//! image coordinates, even when the working image was rotated.
+
 use crate::crop::{crop_quad, min_area_quad, RecCropMode};
 use crate::ctc::DecodedSequence;
 use crate::detection::DetInferenceSession;
@@ -270,11 +277,17 @@ impl From<DictionaryError> for OcrError {
 /// Aggregated configuration used by [`OcrEngine`] during inference.
 #[derive(Debug, Clone)]
 pub struct OcrEngineConfig {
+    /// Detection resizing, channel order and pixel normalization.
     pub det_preprocessor: DetPreProcessorConfig,
+    /// Detection thresholds and candidate limits.
     pub det_postprocessor: DetPostProcessorConfig,
+    /// Expansion of detected regions before cropping.
     pub det_unclipper: DetPolygonUnclipperConfig,
+    /// Recognition crop resizing, padding and normalization.
     pub rec_preprocessor: RecPreProcessorConfig,
+    /// CTC blank and unknown-class handling.
     pub rec_postprocessor: RecPostProcessorConfig,
+    /// Maximum number of text crops per recognition batch; must be positive.
     pub rec_batch_size: usize,
     /// How text regions are cut out before recognition.
     pub rec_crop_mode: RecCropMode,
@@ -319,7 +332,10 @@ pub struct OcrEngine {
 /// Result of running the full OCR pipeline for a single detected region.
 #[derive(Debug, Clone)]
 pub struct OcrResult {
+    /// Decoded text; an all-blank CTC sequence produces an empty string.
     pub text: String,
+    /// Mean emitted-token probability, not the detection box score.
+    /// See [`DecodedSequence::confidence`] for the empty-output convention.
     pub confidence: f32,
     /// Detected text box in input-image pixels: the minimum-area rectangle
     /// (`tl, tr, br, bl`, closed ring), computed like PaddleOCR's
@@ -327,10 +343,14 @@ pub struct OcrResult {
     pub bounding_box: Polygon<f64>,
 }
 
+/// Wall-clock durations for one pipeline stage, including all its batches.
 #[derive(Debug, Clone)]
 pub struct StageTimings {
+    /// Input preparation; recognition also includes cropping detected regions.
     pub preprocess: Duration,
+    /// Model execution, including plan compilation on cache misses.
     pub inference: Duration,
+    /// Output decoding or geometry reconstruction.
     pub postprocess: Duration,
 }
 
@@ -344,13 +364,18 @@ impl StageTimings {
     }
 }
 
+/// Wall-clock measurements. Stage sums need not equal total orchestration time.
 #[derive(Debug, Clone)]
 pub struct OcrTimings {
+    /// End-to-end duration, including decoding for path/byte entry points.
     pub total: Duration,
+    /// Image decoding duration; zero when given an already decoded image.
     pub image_decode: Duration,
     /// Time spent in the document and text-line orientation classifiers.
     pub orientation: Duration,
+    /// Detection tensor preparation, inference and box reconstruction.
     pub detection: StageTimings,
+    /// Crop preparation, recognition inference and CTC decoding.
     pub recognition: StageTimings,
 }
 
@@ -366,9 +391,12 @@ impl OcrTimings {
     }
 }
 
+/// OCR results with timing measurements and optional page rotation metadata.
 #[derive(Debug, Clone)]
 pub struct OcrRunWithMetrics {
+    /// One result per detected region; empty when detection finds no text.
     pub results: Vec<OcrResult>,
+    /// Durations measured during this run, including any cache warmup.
     pub timings: OcrTimings,
     /// Angle (0, 90, 180 or 270) the document orientation classifier
     /// rotated the page by before detection, when that classifier is enabled.
@@ -496,7 +524,6 @@ impl OcrEngine {
         Ok(run)
     }
 
-    /// Executes the full OCR pipeline on an image already loaded in memory.
     /// Returns the effective configuration for this engine.
     pub fn config(&self) -> &OcrEngineConfig {
         &self.config
@@ -529,11 +556,15 @@ impl OcrEngine {
         self.config.rec_batch_size
     }
 
+    /// Executes OCR on an already decoded image. Results use its coordinates.
+    /// Returns an empty vector when detection finds no regions; stage failures
+    /// propagate as [`OcrError`].
     pub fn run_from_image(&self, image: &DynamicImage) -> Result<Vec<OcrResult>, OcrError> {
         let run = self.run_with_metrics_from_image_impl(image)?;
         Ok(run.results)
     }
 
+    /// Like [`Self::run_from_image`], with timings; image decoding time is zero.
     pub fn run_with_metrics_from_image(
         &self,
         image: &DynamicImage,
@@ -1079,6 +1110,8 @@ impl OcrEngineBuilder {
         };
         let executor = crate::threading::executor_for(config.inference_threads);
 
+        // Resolve defaults, then model metadata, then explicit builder
+        // overrides so a caller's detection thresholds take precedence.
         if let Some(det_config) = &det_model_config {
             apply_det_model_config(&mut config, det_config)?;
             if self.det_postprocess_from_model_config {
@@ -1507,6 +1540,8 @@ impl RecognitionPipeline {
             .map_err(OcrError::from)?;
         timings.postprocess += post_start.elapsed();
 
+        // Undo width sorting before pairing text with detection polygons.
+        // Returning batch order here would attach text to the wrong boxes.
         let mut results: Vec<Option<DecodedSequence>> = vec![None; crops.len()];
         for (chunk, sequences) in chunks.iter().zip(decoded) {
             if sequences.len() != chunk.len() {

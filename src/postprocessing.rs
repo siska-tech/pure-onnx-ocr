@@ -1,3 +1,10 @@
+//! DBNet score-map filtering and text-box geometry.
+//!
+//! Candidate extraction works in probability-map coordinates. Expansion
+//! (unclip) restores the text margin, then scaling maps boxes to image pixels.
+//! Pixel thresholds and mean candidate scores serve different purposes:
+//! the former forms connected regions; the latter rejects weak regions.
+
 use crate::detection::DetInferenceOutput;
 use geo_types::{Coord, LineString, Polygon};
 use i_overlay::float::overlay::OverlayOptions;
@@ -68,10 +75,12 @@ pub struct DetPostProcessor {
 }
 
 impl DetPostProcessor {
+    /// Stores candidate extraction settings; finite thresholds are clamped on use.
     pub fn new(config: DetPostProcessorConfig) -> Self {
         Self { config }
     }
 
+    /// Extracts outer contours from an inference result in score-map coordinates.
     pub fn process(
         &self,
         output: &DetInferenceOutput,
@@ -79,6 +88,9 @@ impl DetPostProcessor {
         self.process_probability_map(&output.probability_map)
     }
 
+    /// Thresholds a `[height, width]` score map and filters candidate contours.
+    /// The area-based candidate limit is applied before mean-score filtering.
+    /// Returns an error for an empty map or an invalid image buffer size.
     pub fn process_probability_map(
         &self,
         probability_map: &Array2<f32>,

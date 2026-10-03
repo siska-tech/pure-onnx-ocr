@@ -1,6 +1,6 @@
 [package]
 name = "pure-onnx-ocr-wasm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.91"
 description = "WebAssembly (wasm-bindgen) bindings for pure-onnx-ocr: PaddleOCR PP-OCRv5 / PP-OCRv6 in the browser."

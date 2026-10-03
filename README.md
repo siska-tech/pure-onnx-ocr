@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-03（v0.2.0）  
+改訂: 2026-10-03（v0.2.1）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -32,7 +32,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.2.0"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.2.1"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
@@ -304,6 +304,8 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
   - ブラウザ（WebAssembly）に対応した。メモリからの入力、wasm-bindgen のバインディング、デモを追加した（`docs/devlog/wasm/`）。
   - 推論をマルチスレッド化し、認識のバッチサイズを 1 にした。パイプライン全体で 2.9〜4.7 倍速くなった（`docs/devlog/perf/`）。
   - CI（GitHub Actions）と、テスト用モデルの取得スクリプトを整備した。
+
+- 2026-10-03: **v0.2.1**。認識領域の整数オーバーフローと検出出力の形状検証を修正し、回帰テストとソースコメントを整備した。
 
 ## コントリビューション
 

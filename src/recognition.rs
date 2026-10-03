@@ -1,3 +1,9 @@
+//! Recognition inference and dictionary-backed CTC postprocessing.
+//!
+//! Input tensors use `[batch, channel, height, width]`; outputs use
+//! `[batch, time, class]`. Valid crop widths determine how much of each
+//! output sequence to decode, excluding the right-hand padding.
+
 use crate::ctc::{
     CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence,
 };
@@ -16,7 +22,9 @@ use tract_onnx::tract_core::internal::anyhow;
 /// Result of running SVTR recognition inference.
 #[derive(Debug, Clone)]
 pub struct RecInferenceOutput {
+    /// Scores in `[batch, time, class]` order; may already be probabilities.
     pub logits: Array3<f32>,
+    /// Number of leading time steps to decode for each batch entry.
     pub valid_timesteps: Vec<usize>,
 }
 
@@ -100,6 +108,10 @@ impl RecInferenceSession {
         self.input_height
     }
 
+    /// Runs a batch and estimates valid output lengths from its crop widths.
+    ///
+    /// The tensor must have three channels and the configured input height.
+    /// Compilation, inference and incompatible output-shape errors propagate.
     pub fn run(&self, batch: &PreprocessedRecBatch) -> TractResult<RecInferenceOutput> {
         self.run_on(batch, &self.executor)
     }
@@ -179,6 +191,8 @@ impl RecInferenceSession {
             ));
         }
 
+        // Infer temporal downsampling from the actual output rather than a
+        // model-specific stride. Only the unpadded prefix should reach CTC.
         let max_width = batch.max_width as f32;
         let scale = if max_width > 0.0 {
             time_steps as f32 / max_width
@@ -247,6 +261,8 @@ impl RecInferenceSession {
             width
         );
 
+        // Height is fixed per session, so batch size and width identify a plan.
+        // Compilation happens without holding the cache mutex.
         let mut model = self.base_model.clone();
         model.set_input_fact(
             0,
@@ -278,7 +294,9 @@ impl RecInferenceSession {
 /// Configuration for recognition post processing (CTC decoding stage).
 #[derive(Debug, Clone)]
 pub struct RecPostProcessorConfig {
+    /// CTC blank class; normally the dictionary's index 0.
     pub blank_id: usize,
+    /// Text emitted for an unknown model class (default: `[UNK]`).
     pub fallback_token: String,
 }
 
@@ -327,6 +345,7 @@ pub struct RecPostProcessor {
 }
 
 impl RecPostProcessor {
+    /// Shares the vocabulary and configures the decoder's unknown-class fallback.
     pub fn new(dictionary: Arc<RecDictionary>, config: RecPostProcessorConfig) -> Self {
         let decoder = CtcGreedyDecoder::new(CtcGreedyDecoderConfig {
             blank_id: config.blank_id,
@@ -338,6 +357,8 @@ impl RecPostProcessor {
         }
     }
 
+    /// Decodes each inference sample in order, using its valid time-step prefix.
+    /// Decoder errors are preserved inside [`RecPostProcessorError`].
     pub fn process(
         &self,
         output: &RecInferenceOutput,

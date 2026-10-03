@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/).
 Before 1.0, minor versions may contain breaking changes.
 
+## [0.2.1] - 2026-10-03
+
+### Fixed
+
+- Recognition region bounds checks now reject overflowing widths and heights
+  with `RegionOutOfBounds` instead of panicking or wrapping integer additions.
+- Detection output conversion validates `[1, 1, H, W]` with positive spatial
+  dimensions before indexing, returning an error for incompatible model outputs.
+- The CTC blank-ID error test now asserts the error variant and field values.
+
+### Added
+
+- Seven regression tests covering invalid regions, image-edge crops, invalid
+  detection output shapes and preservation of score-map axes and values.
+
+### Changed
+
+- Expanded API and implementation comments for tensor layouts, CTC decoding,
+  coordinate scaling, plan caching, configuration precedence and stage timings.
+- Corrected dictionary whitespace and WebAssembly polygon documentation.
+
 ## [0.2.0] - 2026-10-03
 
 PaddleOCR PP-OCRv6 support, PaddleOCR 3.x-compatible pre/post-processing,
@@ -108,5 +129,6 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
+[0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/releases/tag/v0.1.0

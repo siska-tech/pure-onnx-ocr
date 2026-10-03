@@ -185,8 +185,9 @@ impl RecDictionary {
 
     /// Loads a dictionary from a UTF-8 encoded text file.
     ///
-    /// Each non-empty line is treated as a token. Lines containing only
-    /// whitespace are ignored. Duplicate tokens result in an error.
+    /// Empty lines are ignored. Non-empty whitespace-only lines are preserved
+    /// as tokens (including ASCII and fullwidth spaces); other lines are trimmed.
+    /// A UTF-8 BOM is removed from the first line. Duplicate tokens are errors.
     pub fn from_text_file(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path).map_err(|source| DictionaryError::Io {
@@ -251,7 +252,7 @@ impl RecDictionary {
         Ok(Self { tokens, reverse })
     }
 
-    /// Returns the number of entries in the dictionary.
+    /// Returns the number of classes, including the leading CTC blank.
     pub fn len(&self) -> usize {
         self.tokens.len()
     }
@@ -266,7 +267,8 @@ impl RecDictionary {
         &self.tokens[0]
     }
 
-    /// Returns true if the dictionary has no entries.
+    /// Returns true if the dictionary has no entries, including the blank.
+    /// Successful constructors always include a blank and at least one token.
     pub fn is_empty(&self) -> bool {
         self.tokens.is_empty()
     }
