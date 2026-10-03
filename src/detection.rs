@@ -1,9 +1,12 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::onnx_model::PlanCache;
 use crate::preprocessing::PreprocessedDetInput;
+
+/// Default number of compiled detection plans (one per input size) kept in memory.
+pub const DEFAULT_DET_PLAN_CACHE: usize = 4;
 use ndarray::{Array2, Axis};
 use tract_onnx::prelude::*;
 use tract_onnx::tract_core::internal::anyhow;
@@ -18,13 +21,13 @@ pub struct DetInferenceOutput {
 #[derive(Debug)]
 pub struct DetInferenceSession {
     base_model: InferenceModel,
-    cache: RefCell<HashMap<(u32, u32), Arc<TypedRunnableModel>>>,
+    cache: RefCell<PlanCache<(u32, u32)>>,
 }
 
 impl DetInferenceSession {
     pub fn load(model_path: impl AsRef<Path>) -> TractResult<Self> {
         let model_path = model_path.as_ref();
-        println!("[DetInfer] Loading detection model from {:?}", model_path);
+        log::info!("[DetInfer] Loading detection model from {:?}", model_path);
 
         let mut inference_model = crate::onnx_model::load_paddle_onnx(model_path)?;
 
@@ -38,15 +41,15 @@ impl DetInferenceSession {
             ),
         )?;
 
-        println!("[DetInfer] Detection model prepared");
+        log::debug!("[DetInfer] Detection model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: RefCell::new(HashMap::new()),
+            cache: RefCell::new(PlanCache::new(DEFAULT_DET_PLAN_CACHE)),
         })
     }
 
     pub fn run(&self, input: &PreprocessedDetInput) -> TractResult<DetInferenceOutput> {
-        println!(
+        log::debug!(
             "[DetInfer] Running inference with input dims {:?}",
             input.tensor.shape()
         );
@@ -67,7 +70,7 @@ impl DetInferenceSession {
             .index_axis(Axis(0), 0)
             .to_owned();
 
-        println!(
+        log::debug!(
             "[DetInfer] Inference complete, output dims {:?}",
             probability_map.raw_dim()
         );
@@ -75,14 +78,26 @@ impl DetInferenceSession {
         Ok(DetInferenceOutput { probability_map })
     }
 
+    /// Sets how many compiled plans (one per input shape) are kept in memory.
+    /// The least recently used plan is dropped when the limit is exceeded.
+    pub fn set_plan_cache_capacity(&self, capacity: usize) {
+        self.cache.borrow_mut().set_capacity(capacity);
+    }
+
+    /// Returns the number of compiled plans currently cached.
+    pub fn cached_plan_count(&self) -> usize {
+        self.cache.borrow().len()
+    }
+
     fn runnable_for_dims(&self, width: u32, height: u32) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = self.cache.borrow().get(&(width, height)) {
-            return Ok(Arc::clone(plan));
+        if let Some(plan) = self.cache.borrow_mut().get((width, height)) {
+            return Ok(plan);
         }
 
-        println!(
+        log::debug!(
             "[DetInfer] Preparing runnable model for dims ({}, {})",
-            width, height
+            width,
+            height
         );
 
         let mut model = self.base_model.clone();

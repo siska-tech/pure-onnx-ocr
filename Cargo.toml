@@ -14,6 +14,7 @@ categories = ["science::ai-and-machine-learning", "science::computer-vision"]
 
 [dependencies]
 tract-onnx = "0.23"
+log = "0.4"
 ndarray = "0.17"
 time = "0.3.44"
 i_overlay = "4.1.1"

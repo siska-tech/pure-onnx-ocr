@@ -2,10 +2,13 @@ use crate::ctc::{
     CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence,
 };
 use crate::dictionary::RecDictionary;
+use crate::onnx_model::PlanCache;
 use crate::preprocessing::PreprocessedRecBatch;
+
+/// Default number of compiled recognition plans (one per batch size and width) kept in memory.
+pub const DEFAULT_REC_PLAN_CACHE: usize = 16;
 use ndarray::Array3;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tract_onnx::prelude::*;
@@ -23,7 +26,7 @@ pub struct RecInferenceOutput {
 pub struct RecInferenceSession {
     base_model: InferenceModel,
     input_height: u32,
-    cache: RefCell<HashMap<(usize, u32), Arc<TypedRunnableModel>>>,
+    cache: RefCell<PlanCache<(usize, u32)>>,
 }
 
 impl RecInferenceSession {
@@ -42,7 +45,7 @@ impl RecInferenceSession {
         if input_height == 0 {
             return Err(anyhow!("recognition input height must be positive"));
         }
-        println!("[RecInfer] Loading recognition model from {:?}", model_path);
+        log::info!("[RecInfer] Loading recognition model from {:?}", model_path);
 
         let mut inference_model = crate::onnx_model::load_paddle_onnx(model_path)?;
 
@@ -61,11 +64,11 @@ impl RecInferenceSession {
             ),
         )?;
 
-        println!("[RecInfer] Recognition model prepared");
+        log::debug!("[RecInfer] Recognition model prepared");
         Ok(Self {
             base_model: inference_model,
             input_height,
-            cache: RefCell::new(HashMap::new()),
+            cache: RefCell::new(PlanCache::new(DEFAULT_REC_PLAN_CACHE)),
         })
     }
 
@@ -88,7 +91,7 @@ impl RecInferenceSession {
         let height = tensor_shape[2];
         let width = tensor_shape[3];
 
-        println!(
+        log::debug!(
             "[RecInfer] Running inference with input shape {:?}",
             tensor_shape
         );
@@ -157,18 +160,30 @@ impl RecInferenceSession {
         })
     }
 
+    /// Sets how many compiled plans (one per input shape) are kept in memory.
+    /// The least recently used plan is dropped when the limit is exceeded.
+    pub fn set_plan_cache_capacity(&self, capacity: usize) {
+        self.cache.borrow_mut().set_capacity(capacity);
+    }
+
+    /// Returns the number of compiled plans currently cached.
+    pub fn cached_plan_count(&self) -> usize {
+        self.cache.borrow().len()
+    }
+
     fn runnable_for_dims(
         &self,
         batch_size: usize,
         width: u32,
     ) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = self.cache.borrow().get(&(batch_size, width)) {
-            return Ok(Arc::clone(plan));
+        if let Some(plan) = self.cache.borrow_mut().get((batch_size, width)) {
+            return Ok(plan);
         }
 
-        println!(
+        log::debug!(
             "[RecInfer] Preparing runnable model for batch {} width {}",
-            batch_size, width
+            batch_size,
+            width
         );
 
         let mut model = self.base_model.clone();

@@ -1231,6 +1231,7 @@ dependencies = [
  "i_overlay",
  "image",
  "imageproc",
+ "log",
  "ndarray",
  "once_cell",
  "time",

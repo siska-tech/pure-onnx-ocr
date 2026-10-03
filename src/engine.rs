@@ -532,6 +532,8 @@ pub struct OcrEngineBuilder {
     det_box_threshold: f32,
     rec_batch_size: usize,
     rec_use_space_char: bool,
+    det_plan_cache_capacity: usize,
+    rec_plan_cache_capacity: usize,
 }
 
 impl Default for OcrEngineBuilder {
@@ -549,6 +551,8 @@ impl Default for OcrEngineBuilder {
             det_box_threshold: post.box_threshold,
             rec_batch_size: OcrEngineConfig::default().rec_batch_size,
             rec_use_space_char: true,
+            det_plan_cache_capacity: crate::detection::DEFAULT_DET_PLAN_CACHE,
+            rec_plan_cache_capacity: crate::recognition::DEFAULT_REC_PLAN_CACHE,
         }
     }
 }
@@ -658,6 +662,18 @@ impl OcrEngineBuilder {
         self
     }
 
+    /// Limits how many compiled inference plans are cached per model.
+    ///
+    /// `tract` compiles one plan per input shape (detection: image size,
+    /// recognition: batch size and width). Each plan keeps its own optimised
+    /// weights, so large models (PP-OCRv6 medium) benefit from a small limit.
+    /// Defaults: 4 detection plans, 16 recognition plans.
+    pub fn plan_cache_capacity(mut self, detection: usize, recognition: usize) -> Self {
+        self.det_plan_cache_capacity = detection;
+        self.rec_plan_cache_capacity = recognition;
+        self
+    }
+
     /// Consumes the builder and attempts to construct an [`OcrEngine`].
     pub fn build(self) -> Result<OcrEngine, OcrError> {
         let det_model_path = self.det_model_path.ok_or(OcrError::MissingField {
@@ -721,6 +737,9 @@ impl OcrEngineBuilder {
             source,
             path: rec_model_path.clone(),
         })?;
+
+        det_session.set_plan_cache_capacity(self.det_plan_cache_capacity);
+        rec_session.set_plan_cache_capacity(self.rec_plan_cache_capacity);
 
         let mut dictionary = RecDictionary::from_path(&dictionary_path)?;
         if self.rec_use_space_char {

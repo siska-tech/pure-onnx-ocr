@@ -23,6 +23,7 @@ fn main() {
 
 fn run() -> Result<(), RunError> {
     let cli = Cli::parse(env::args())?;
+    init_logger(cli.verbose);
 
     if cli.show_help {
         println!("{}", Cli::usage());
@@ -140,6 +141,7 @@ struct Cli {
     det_unclip_ratio: Option<f64>,
     rec_batch_size: Option<usize>,
     benchmark: bool,
+    verbose: bool,
     show_help: bool,
 }
 
@@ -166,6 +168,7 @@ impl Cli {
             det_unclip_ratio: None,
             rec_batch_size: None,
             benchmark: false,
+            verbose: false,
             show_help: false,
         };
 
@@ -242,6 +245,9 @@ impl Cli {
                 }
                 "--benchmark" => {
                     cli.benchmark = true;
+                }
+                "--verbose" | "-v" => {
+                    cli.verbose = true;
                 }
                 other if other.starts_with('-') => {
                     return Err(RunError::cli(format!("unknown option `{}`", other)));
@@ -372,4 +378,34 @@ fn print_stage_timings(prefix: &str, stage: &StageTimings) {
         &format!("{}.postprocess_seconds", prefix),
         stage.postprocess,
     );
+}
+
+/// Minimal stderr logger so the CLI can surface the library's `log` output
+/// without pulling in a logging framework.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: StderrLogger = StderrLogger;
+
+fn init_logger(verbose: bool) {
+    if log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(if verbose {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Warn
+        });
+    }
 }

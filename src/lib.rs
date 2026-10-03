@@ -126,56 +126,56 @@ fn run_dummy_inference(
     label: &str,
 ) -> TractResult<TVec<Tensor>> {
     let model_path = model_path.as_ref();
-    println!("[{}] Loading model from {:?}", label, model_path);
+    log::debug!("[{}] Loading model from {:?}", label, model_path);
 
     let start = std::time::Instant::now();
 
     let mut model = onnx_model::load_paddle_onnx(model_path)?;
-    println!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
+    log::debug!("[{}] Model loaded, elapsed: {:?}", label, start.elapsed());
 
     model.set_input_fact(
         0,
         InferenceFact::dt_shape(dummy_input.datum_type(), dummy_input.shape()),
     )?;
-    println!("[{}] Input fact set, elapsed: {:?}", label, start.elapsed());
+    log::debug!("[{}] Input fact set, elapsed: {:?}", label, start.elapsed());
 
-    println!(
+    log::debug!(
         "[{}] Starting model conversion to typed, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_typed()?;
 
-    println!(
+    log::debug!(
         "[{}] Starting decluttering, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_decluttered()?;
 
-    println!(
+    log::debug!(
         "[{}] Starting optimization, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_optimized()?;
 
-    println!(
+    log::debug!(
         "[{}] Making runnable, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let model = model.into_runnable()?;
 
-    println!("[{}] Total preparation time: {:?}", label, start.elapsed());
+    log::debug!("[{}] Total preparation time: {:?}", label, start.elapsed());
 
-    println!(
+    log::debug!(
         "[{}] Running inference, elapsed: {:?}",
         label,
         start.elapsed()
     );
     let outputs = model.run(tvec!(dummy_input.into()))?;
-    println!(
+    log::debug!(
         "[{}] Inference complete, elapsed: {:?}",
         label,
         start.elapsed()

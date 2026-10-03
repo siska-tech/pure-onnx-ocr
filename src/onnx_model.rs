@@ -38,3 +38,94 @@ fn clear_intermediate_facts(model: &mut InferenceModel) -> TractResult<()> {
     }
     Ok(())
 }
+
+/// Small least-recently-used cache of optimised inference plans keyed by
+/// input shape.
+///
+/// `tract` produces the fastest plans when every dimension is concrete, so a
+/// plan is compiled per input shape (100-400 ms each). Each plan holds its own
+/// optimised copy of the weights, so the cache is bounded to keep memory in
+/// check when many image sizes or text widths are seen.
+#[derive(Debug)]
+pub(crate) struct PlanCache<K> {
+    capacity: usize,
+    entries: std::collections::VecDeque<(K, std::sync::Arc<TypedRunnableModel>)>,
+}
+
+impl<K: PartialEq + Copy> PlanCache<K> {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: std::collections::VecDeque::new(),
+        }
+    }
+
+    pub(crate) fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity.max(1);
+        while self.entries.len() > self.capacity {
+            self.entries.pop_front();
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns the plan for `key`, marking it as most recently used.
+    pub(crate) fn get(&mut self, key: K) -> Option<std::sync::Arc<TypedRunnableModel>> {
+        let index = self.entries.iter().position(|(k, _)| *k == key)?;
+        let entry = self.entries.remove(index)?;
+        let plan = std::sync::Arc::clone(&entry.1);
+        self.entries.push_back(entry);
+        Some(plan)
+    }
+
+    /// Inserts a plan, evicting the least recently used one when full.
+    pub(crate) fn insert(&mut self, key: K, plan: std::sync::Arc<TypedRunnableModel>) {
+        if let Some(index) = self.entries.iter().position(|(k, _)| *k == key) {
+            self.entries.remove(index);
+        }
+        while self.entries.len() >= self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((key, plan));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_plan() -> std::sync::Arc<TypedRunnableModel> {
+        let mut model = TypedModel::default();
+        let source = model
+            .add_source("x", f32::fact([1]))
+            .expect("source should be added");
+        model.outputs = vec![source];
+        model.into_runnable().unwrap()
+    }
+
+    #[test]
+    fn evicts_least_recently_used_plan() {
+        let mut cache = PlanCache::new(2);
+        cache.insert(1u32, dummy_plan());
+        cache.insert(2u32, dummy_plan());
+        assert!(cache.get(1).is_some()); // 1 becomes most recent
+        cache.insert(3u32, dummy_plan()); // evicts 2
+        assert!(cache.get(2).is_none());
+        assert!(cache.get(1).is_some());
+        assert!(cache.get(3).is_some());
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn shrinking_capacity_drops_oldest_entries() {
+        let mut cache = PlanCache::new(3);
+        for key in 0..3u32 {
+            cache.insert(key, dummy_plan());
+        }
+        cache.set_capacity(1);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(2).is_some());
+    }
+}
