@@ -151,17 +151,21 @@ cargo run --release --bin ocr_smoke -- path/to/image.jpg \
 ベンチマーク用途では `--benchmark` フラグを付与します。総時間・画像デコード・DBNet / SVTR の各ステージ（前処理・推論・後処理）が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
 
 ```bash
-cargo run --bin ocr_smoke -- path/to/image.jpg --benchmark
+cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg 
+  --det-model-dir tests/fixtures/models/ppocrv6/small_det 
+  --rec-model-dir tests/fixtures/models/ppocrv6/small_rec --benchmark
 
-[INFO] benchmark.image=tests/fixtures/images/demo.png
-[INFO] benchmark.total_seconds=0.412583
-[INFO] benchmark.image_decode_seconds=0.003121
-[INFO] benchmark.det.preprocess_seconds=0.044512
-[INFO] benchmark.det.inference_seconds=0.221009
-[INFO] benchmark.det.postprocess_seconds=0.012334
-[INFO] benchmark.rec.preprocess_seconds=0.018775
-[INFO] benchmark.rec.inference_seconds=0.094281
-[INFO] benchmark.rec.postprocess_seconds=0.005237
+# PP-OCRv6 small、Core i7-1360P・8 スレッド。1 回目の実行なので推論計画のコンパイル時間を含む
+[INFO] benchmark.image=tests/fixtures/images/general_ocr_002.jpg
+[INFO] benchmark.total_seconds=2.064020
+[INFO] benchmark.image_decode_seconds=0.004564
+[INFO] benchmark.orientation_seconds=0.000000
+[INFO] benchmark.det.preprocess_seconds=0.018218
+[INFO] benchmark.det.inference_seconds=0.952411
+[INFO] benchmark.det.postprocess_seconds=0.004526
+[INFO] benchmark.rec.preprocess_seconds=0.010476
+[INFO] benchmark.rec.inference_seconds=1.038929
+[INFO] benchmark.rec.postprocess_seconds=0.028048
 ```
 
 推論時間、検出されたテキストと信頼度、ポリゴン座標が標準出力に整形されます。入力画像やモデルが見つからない場合はエラーメッセージと共に終了します。
@@ -292,6 +296,13 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 - 2025-11-10: `task-fix-001` で `RecDictionary` に blank トークンを追加し、`OcrEngineBuilder` と CTC デコーダーが PaddleOCR の仕様 (`blank_id = 0`) と一致するように修正。
 - 2025-11-10: `task-fix-002` で認識信頼度を「確率出力を検出して最大値を直接集計し、ロジット出力は log-sum-exp で Softmax 後に算術平均化する」方式へ刷新し、`ocr_smoke` の信頼度出力が実測値を反映するよう改善。
 - 2025-11-10: `task-fix-003` で `ocr_smoke` に `--benchmark` 計測フラグと `OcrEngine::run_with_metrics_*` API を追加し、主要ステージの所要時間を取得可能にした。
+- 2026-10-03: **v0.2.0**。詳細は `CHANGELOG.md` と `docs/devlog/` を参照。
+  - PP-OCRv6（tiny / small / medium）に対応した。PaddleOCR 3.x のモデルディレクトリと `inference.yml` をそのまま読み込める（`docs/devlog/ppocrv6/`）。
+  - 前処理と後処理を PaddleOCR 3.x に揃え、PaddleOCR 3.7 との一致テストを追加した。v6 medium は、テスト画像で本家と完全に一致する（`task-v6-010`）。
+  - 検出領域の回転補正、ページの向き・行の上下の分類器、原寸での検出モードを追加した。
+  - ブラウザ（WebAssembly）に対応した。メモリからの入力、wasm-bindgen のバインディング、デモを追加した（`docs/devlog/wasm/`）。
+  - 推論をマルチスレッド化し、認識のバッチサイズを 1 にした。パイプライン全体で 2.9〜4.7 倍速くなった（`docs/devlog/perf/`）。
+  - CI（GitHub Actions）と、テスト用モデルの取得スクリプトを整備した。
 
 ## コントリビューション
 

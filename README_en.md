@@ -246,6 +246,14 @@ Each English document mirrors the Japanese source to help international contribu
 - 2025-11-09: Enhanced public Rustdoc coverage (`task-doc-002`) and validated `cargo doc` output.
 - 2025-11-09: Completed Cargo metadata (`task-doc-003`) and `cargo package --no-verify` validation.
 - 2025-11-09: Added integration tests (`task-doc-004`) with fixture strategy and CI guidance.
+- 2025-11-10: Fixed the CTC blank index (`task-fix-001`), softmax-based confidence (`task-fix-002`) and benchmark timings (`task-fix-003`).
+- 2026-10-03: **v0.2.0** (see `CHANGELOG.md` and `docs/devlog/`):
+  - PP-OCRv6 tiny/small/medium and PaddleOCR 3.x model directories (`inference.yml`).
+  - PaddleOCR 3.x-compatible processing with a parity test against PaddleOCR 3.7; v6 medium matches it exactly on the test images.
+  - Rotation-corrected crops, page and text-line orientation classifiers, native-resolution detection.
+  - Browser WebAssembly support (in-memory inputs, wasm-bindgen bindings, demo).
+  - Multi-threaded inference with batch size 1: whole pipeline 2.9-4.7x faster.
+  - GitHub Actions CI and a fixture download script.
 
 ## Contributing
 

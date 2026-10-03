@@ -1,403 +1,123 @@
 # 詳細設計書 (モジュール設計書): Pure Rust OnnxOCR
 
 作成者: Shion Watanabe  
-日付: 2025-11-09  
+初版: 2025-11-09  
+改訂: 2026-10-03（v0.2.0）  
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 ## 🎯 目的
 
-  * API設計書で定義されたインターフェース（`OcrEngineBuilder`, `OcrEngine`）の内部ロジックを具体化する。
-  * 開発者が迷わず実装できるよう、`tract` [1, 2, 3]、`image` [4, 5]、`imageproc` [6, 7, 8, 9]、`i_overlay` [10, 11]、`ndarray` [12, 13, 14, 15, 16, 17] を使用した処理の手順とデータ構造を明確にする。
+  * 各モジュールの内部構造とアルゴリズムを、実装に合わせて記述する。
+  * PaddleOCR 3.x（PaddleX）の参照実装との対応関係を明記する。前処理と後処理は本家と同じ結果になるように実装しており、`tests/paddle_parity.rs` で検証している。
 
 -----
 
 ## 1\. 内部クラス・関数設計
 
-API（`OcrEngineBuilder`, `OcrEngine`）を実現するため、以下のプライベートヘルパー関数と内部データ構造を設計する。
-
-```rust
-// --- 内部ヘルパー構造体 (プライベート) ---
-
-/// 検出前処理の結果を保持する内部構造体
-struct PreprocessedDetInput {
-    /// tract に入力する 形状のテンソル
-    tensor: tract_onnx::prelude::Tensor,
-    /// リサイズ後の検出モデル入力サイズ (width, height)
-    resized_dims: (u32, u32),
-    /// 元画像からリサイズ画像へのスケール比
-    scale_ratio: f64,
-}
-
-/// 認識前処理の結果をバッチで保持する内部構造体
-struct PreprocessedRecInput {
-    /// tract に入力する 形状のバッチテンソル
-    batch_tensor: tract_onnx::prelude::Tensor,
-    /// このバッチに対応する元のポリゴン (座標は元画像スケール)
-    original_polygons: Vec<geo_types::Polygon>,
-}
-
-/// OcrEngine の設定パラメータ (API の OcrConfig と同一)
-struct OcrConfig {
-    det_limit_side_len: u32,
-    det_unclip_ratio: f64,
-    det_thresh: f32, // DBNetの二値化閾値 (例: 0.3) [18]
-    rec_image_shape: (u32, u32), // (width, height) (例: 320, 48) [19, 20]
-    rec_batch_size: usize,
-}
-
-// --- OcrEngine 内部のプライベートメソッド ---
-impl OcrEngine {
-    /// (API `build` から呼ばれる) tract モデルをロードする
-    fn load_model(path: &Path) -> Result<RunnableModel, OcrError> {... }
-
-    /// (API `build` から呼ばれる) 辞書ファイルをロードする
-    fn load_dictionary(path: &Path) -> Result<(Vec<String>, usize), OcrError> {... }
-
-    /// 検出パイプライン (ステップ 1): 前処理
-    fn preprocess_detection(&self, image: &image::DynamicImage) -> Result<PreprocessedDetInput, OcrError> {... }
-
-    /// 検出パイプライン (ステップ 2): 後処理
-    fn postprocess_detection(
-        &self,
-        det_output: &tract_onnx::prelude::Tensor, // 形状
-        resized_dims: (u32, u32),
-        scale_ratio: f64,
-    ) -> Result<Vec<geo_types::Polygon>, OcrError> {... }
-
-    /// 認識パイプライン (ステップ 1): 前処理 (バッチ化を含む)
-    fn preprocess_recognition(
-        &self,
-        image: &image::DynamicImage,
-        polygons: &[geo_types::Polygon],
-    ) -> Result<Vec<PreprocessedRecInput>, OcrError> {... }
-
-    /// 認識パイプライン (ステップ 2): 後処理 (CTCデコード)
-    fn postprocess_recognition(
-        &self,
-        rec_output: &tract_onnx::prelude::Tensor, // 形状
-    ) -> Result<Vec<(String, f32)>, OcrError> {... }
-}
-
-// --- 内部ヘルパー関数 (プライベート) ---
-
-/// imageproc の Contour を geo_types の Polygon に変換する
-fn contour_to_geo_polygon(contour: &imageproc::contours::Contour<i32>) -> geo_types::Polygon {... }
-
-/// CTC Greedy デコードアルゴリズム
-fn ctc_greedy_decode(indices: &[usize], blank_id: usize) -> Vec<usize> {... }
-```
+| モジュール | 主な型・関数 | 責務 |
+| :--- | :--- | :--- |
+| `engine` | `OcrEngineBuilder`、`OcrEngine`、`DetectionPipeline`、`RecognitionPipeline`（非公開） | 設定の組み立てと、パイプライン全体の制御 |
+| `onnx_model`（非公開） | `load_paddle_onnx(_from_bytes)`、`PlanCache`、`lock_cache` | ONNX の読み込みと `value_info` の破棄、入力形状ごとの推論計画の LRU キャッシュ |
+| `detection` | `DetInferenceSession` | DBNet の推論（入力形状は `[1,3,H,W]`） |
+| `recognition` | `RecInferenceSession`、`RecPostProcessor` | 認識モデルの推論（`[N,3,48,W]`）と CTC デコード |
+| `preprocessing` | `DetPreProcessor`、`RecPreProcessor` | リサイズ、正規化、テンソルへの変換 |
+| `postprocessing` | `DetPostProcessor::db_boxes`、`DetPolygonUnclipper` | DB 後処理（矩形、スコア、unclip） |
+| `crop` | `min_area_quad`、`crop_quad` | 最小面積矩形の算出と、透視変換による切り出し |
+| `imgproc` | `resize_bilinear` | `cv2.resize(INTER_LINEAR)` と同じ結果を返すリサイズ |
+| `paddle_config` | `PaddleInferenceConfig`、最小限の YAML パーサ | `inference.yml` の読み込み |
+| `dictionary` | `RecDictionary` | blank（0）+ 文字 + space（任意）の対応表 |
+| `ctc` | `CtcGreedyDecoder` | 重複とブランクを取り除き、信頼度を計算する |
+| `orientation` | `OrientationClassifier`、`rotate_ccw`、`unrotate_point` | PP-LCNet による方向分類 |
+| `threading`（非公開） | `executor_for`、`run_with`、`parallel_map` | rayon のスレッドプールと、tract の実行器の差し替え |
+| `time`（非公開） | `Instant` | ブラウザでは `web_time`、それ以外では `std` を使う |
 
 ## 2\. データ構造
 
-  * **`OcrEngine`**
-      * `det_model: RunnableModel` (プライベート): ロード済みの `tract` 検出モデル。
-      * `rec_model: RunnableModel` (プライベート): ロード済みの `tract` 認識モデル。
-      * `dictionary: Vec<String>` (プライベート): 認識用の文字辞書 [19, 20, 21]。
-      * `blank_id: usize` (プライベート): CTCデコード用のブランクID [22, 23] (通常は `dictionary.len()` [24])。
-      * `config: OcrConfig` (プライベート): `det_limit_side_len` などの設定値。
-  * **`OcrEngineBuilder`**
-      * `det_path: Option<PathBuf>`
-      * `rec_path: Option<PathBuf>`
-      * `dict_path: Option<PathBuf>`
-      * `config: OcrConfig` (デフォルト値で初期化)
-  * **`OcrResult`**
-      * (API設計書で定義済み: `text: String`, `confidence: f32`, `bounding_box: Polygon`) [25]
-  * **`OcrError`**
-      * (API設計書で定義済み)
+| 型 | 内容 |
+| :--- | :--- |
+| `PreprocessedDetInput` | `tensor`、`resized_dims`、`scale_ratio`、`scale_xy`（縦横それぞれの倍率） |
+| `DetBox` | `quad: [(f64,f64);4]`（tl, tr, br, bl）、`score` |
+| `PreprocessedRecBatch` | `tensor [N,3,48,W]`、`valid_widths`、`max_width` |
+| `RecInferenceOutput` | `logits [N,T,C]`、`valid_timesteps` |
+| `DecodedSequence` | `text`、`token_indices`、`confidence`、`fallback_count` |
+| `OcrEngineConfig` | 前処理・後処理の各設定、`rec_batch_size`、`rec_crop_mode`、`inference_threads` |
 
 ## 3\. アルゴリズム・ロジック
 
 ### 3.1. `OcrEngineBuilder::build`
 
-1.  `det_path`, `rec_path`, `dict_path` がすべて `Some` であることを検証する。`None` があれば `OcrError::ProcessingError` を返す。
-2.  `det_model = OcrEngine::load_model(det_path)` を呼び出す。
-3.  `rec_model = OcrEngine::load_model(rec_path)` を呼び出す。
-      * **重要 (PoCリスク)**: この `load_model` (内部で `tract_onnx::onnx().model_for_path()` [26, 3] を使用) が、`rec.onnx` (SVTR\_HGNet) [19, 20, 27] のロードに失敗する**致命的リスク**が存在する。`tract` は `LayerNormalization` [28, 29, 30, 31, 32] や `Scan` [33, 34] オペレータのサポートが限定的であるため [1, 35, 33, 36, 37]。
-4.  `(dictionary, blank_id) = OcrEngine::load_dictionary(dict_path)` を呼び出す。
-5.  `OcrEngine` インスタンスを生成し、`Ok(engine)` を返す。
-
-#### `OcrEngine::load_model` (プライベート)
-
-```rust
-fn load_model(path: &Path) -> Result<RunnableModel, OcrError> {
-    tract_onnx::onnx()
-       .model_for_path(path) // [26, 3]
-       .map_err(|e| OcrError::ModelLoadError(format!("Failed to load model {}: {}", path.display(), e)))?
-       .into_optimized()
-       .map_err(|e| OcrError::ModelLoadError(format!("Failed to optimize model {}: {}", path.display(), e)))?
-       .into_runnable()
-       .map_err(|e| OcrError::ModelLoadError(format!("Failed to make model runnable {}: {}", path.display(), e)))
-}
-```
-
-#### `OcrEngine::load_dictionary` (プライベート)
-
-```rust
-fn load_dictionary(path: &Path) -> Result<(Vec<String>, usize), OcrError> {
-    let content = std::fs::read_to_string(path)
-       .map_err(|e| OcrError::IoError(e))?;
-    
-    // 辞書を行で分割し、"blank" トークン (通常は最初の行だが、PaddleOCRでは最後に追加されることが多い [24]) を扱う
-    // PP-OCRv5 の辞書 [19, 20, 21] は通常、文字のみを含み、ブランクは暗黙的に最後のインデックス [22, 23]
-    let mut dictionary: Vec<String> = content.lines().map(String::from).collect();
-    
-    // "blank" トークンを明示的に追加 (リファレンス実装に依存)
-    // ここでは、辞書ファイルにはブランクが含まれず、CTCロジックで最後に追加されると仮定する
-    // [24] の "CTC-blank is the last element" に基づく
-    let blank_id = dictionary.len(); 
-    dictionary.push("<blank>".to_string()); // デバッグ用。デコーダロジックは `blank_id` のインデックスのみを使用
-    
-    Ok((dictionary, blank_id))
-}
-```
+1.  検出モデル・認識モデル・辞書のいずれかが指定されていなければ、`MissingField` を返す。辞書は `dictionary_text` → `dictionary_path` → `rec_config_yaml` → `rec_config_path` の順で探す。
+2.  `inference.yml` を解析し、設定に反映する。
+    * 検出: 色順と、正規化の mean / std
+    * 認識: 色順と `image_shape`
+    * `det_postprocess_from_model_config` が有効な場合は、しきい値も反映する。
+3.  ONNX を読み込む。`load_paddle_onnx` は、入力と定数を除くすべてのテンソルの形状情報（fact）を消す。PaddleOCR 3.x のエクスポートは `DynamicDimension.*` というシンボル付きの `value_info` を持っており、そのままだと具体的な入力形状と矛盾して解析に失敗するためである。
+4.  入力の高さ（48）を固定し、幅とバッチ数をシンボルのまま残した基本モデルを作る。推論計画は、実際の入力形状ごとにコンパイルし、LRU キャッシュに保持する（検出 4 個、認識 16 個）。
+5.  辞書を構築し、既定で space を追加する。
+6.  スレッドプールを生成する（`inference_threads`。WebAssembly では 1）。
 
 ### 3.2. `OcrEngine::run_from_image` (メインロジック)
 
-1.  **検出前処理**: `let prep_det = self.preprocess_detection(image)?` [38, 39, 40, 41, 42] を実行。
-2.  **検出推論**: `let det_output = self.det_model.run(tvec!(prep_det.tensor.into()))?` を実行 [26]。`det_output` は `TVec<Arc<Tensor>>`。
-3.  **検出後処理**: `let polygons = self.postprocess_detection(det_output.as_ref(), prep_det.resized_dims, prep_det.scale_ratio)?` [43, 18, 44, 45, 46, 47] を実行。
-4.  `if polygons.is_empty() { return Ok(Vec::new()); }`
-5.  **認識前処理**: `let rec_inputs: Vec<PreprocessedRecInput> = self.preprocess_recognition(image, &polygons)?` [39, 40, 41, 42] を実行。
-6.  `all_results: Vec<OcrResult> = Vec::new();`
-7.  **認識推論 (バッチ処理)**: `rec_inputs` をループ (または `rayon::par_iter` [12, 14, 16])。
-    a.  `let rec_output = self.rec_model.run(tvec!(batch.batch_tensor.into()))?`
-    b.  `let decoded_outputs = self.postprocess_recognition(rec_output.as_ref())?` [19, 24]
-    c.  `batch.original_polygons`, `decoded_outputs` を `zip` して `OcrResult` [25] を生成し、`all_results` に追加。
-8.  `Ok(all_results)` を返す。
+1.  （任意）ページの向きを分類し、0 度以外なら `rotate_ccw` で画像を正立させる。
+2.  `DetectionPipeline` で、入力画像の座標系の矩形の一覧を得る。
+3.  `crop_regions` で切り出す（`Rotated` の場合は `crop_quad`、失敗した場合は外接矩形で切り出す）。
+4.  （任意）行の上下を分類し、`180_degree` と判定された切り出しを 180 度回転する。最後のバッチは件数を揃えるために埋めて、推論計画を使い回す。
+5.  `RecognitionPipeline::run_with_timings` で認識する。
+6.  ページを回転していた場合は、`unrotate_point` で矩形を元の入力画像の座標に戻す。
 
-### 3.3. `preprocess_detection` (アルゴリズム)
+### 3.3. 検出前処理（`DetPreProcessor`、PaddleX `DetResizeForTest` 相当）
 
-```rust
-// 疑似コード
-fn preprocess_detection(&self, image: &DynamicImage) -> Result<PreprocessedDetInput, OcrError> {
-    let (orig_w, orig_h) = image.dimensions();
-    let limit_side_len = self.config.det_limit_side_len as f64; [48, 49, 50]
-    
-    // アスペクト比を維持してリサイズ [48]
-    let (resized_w, resized_h, scale_ratio) = if max(orig_w, orig_h) > limit_side_len {
-        if orig_h > orig_w {
-            let ratio = limit_side_len / orig_h as f64;
-            ( (orig_w as f64 * ratio) as u32, limit_side_len as u32, ratio )
-        } else {
-            let ratio = limit_side_len / orig_w as f64;
-            ( limit_side_len as u32, (orig_h as f64 * ratio) as u32, ratio )
-        }
-    } else {
-        (orig_w, orig_h, 1.0)
-    };
-    
-    // image::resize を使用 [4, 51]
-    let resized_image = image.resize(resized_w, resized_h, image::imageops::FilterType::Lanczos3);
-    
-    // ndarray (HWC) に変換
-    let mut array_hwc: Array3<f32> = Array3::from_shape_fn((resized_h as usize, resized_w as usize, 3), |(y, x, c)| {
-        resized_image.get_pixel(x as u32, y as u32)[c] as f32
-    });
-    
-    // 正規化 [38, 52]
-    array_hwc.par_mapv_inplace(|x| x / 255.0);
-    
-    // HWC -> NCHW [38, 53, 54, 55, 56, 57]
-    let array_nchw = array_hwc.permuted_axes() [55]
-                          .insert_axis(Axis(0)) [38, 14]
-                          .map_err(|e| OcrError::ProcessingError(e.to_string()))?;
-                           
-    let tensor = tract_onnx::prelude::Tensor::from_array(array_nchw.as_dyn())?;
-    
-    Ok(PreprocessedDetInput {
-        tensor,
-        resized_dims: (resized_w, resized_h),
-        scale_ratio,
-    })
-}
-```
+1.  倍率 `ratio` を決める。
+    * `Max` の場合: 長辺が `limit` を超えるなら `limit / 長辺`
+    * `Min` の場合: 短辺が `limit` 未満なら `limit / 短辺`
+2.  `resize = int(辺 × ratio)` とする。長辺が `max_side_limit` を超える場合は、さらに縮小する。
+3.  各辺を `max(round_half_even(辺 / 32) × 32, 32)` にする。
+4.  画像をそのサイズに**引き伸ばす**（`imgproc::resize_bilinear`）。
+5.  BGR の順に並べ、`(x/255 - mean) / std` で正規化する（ImageNet の値）。
+6.  `scale_xy = (変換後の幅 / 元の幅, 変換後の高さ / 元の高さ)` を保持する。
 
-### 3.4. `postprocess_detection` (アルゴリズム)
+### 3.4. 検出後処理（`DetPostProcessor::db_boxes`、PaddleX `DBPostProcess` 相当）
 
-```rust
-// 疑似コード
-fn postprocess_detection(
-    &self,
-    det_output: &Tensor, // 形状
-    resized_dims: (u32, u32),
-    scale_ratio: f64,
-) -> Result<Vec<Polygon>, OcrError> {
-    
-    // 1. テンソルを ndarray (二値化マップ) に変換
-    let prob_map_view = det_output.to_array_view::<f32>()?
-                                .index_axis(Axis(0), 0)
-                                .index_axis(Axis(0), 0); //
+1.  `probability > thresh` で二値化する。
+2.  `find_contours` で輪郭を取り出す。外側の輪郭も穴の輪郭も対象にする（`RETR_LIST` 相当）。先頭から `max_candidates` 個まで処理する。
+3.  輪郭ごとに、凸包を求め、rotating calipers で最小面積矩形を得る。短辺が 3 未満なら除外する。
+4.  スコアを計算する（`box_score_fast` 相当）。矩形の外接範囲の中で、矩形に含まれる画素の確率を平均する。`box_thresh` 未満なら除外する。
+5.  **矩形**を膨張させる（unclip）。距離は `面積 × unclip_ratio / 周長` で、`i_overlay` を使い角は丸める。膨張後の最大の多角形について最小面積矩形を求め、短辺が 5 未満なら除外する。
+6.  エンジンで、各座標に `inverse_scale` を掛けて四捨五入し、画像の範囲に収める。
 
-    let binary_map: Array2<u8> = prob_map_view.mapv(|p| if p > self.config.det_thresh { 255 } else { 0 }); [18]
-    
-    // 2. ndarray から image::GrayImage に変換 [58]
-    let gray_image = image::GrayImage::from_raw(resized_dims.0, resized_dims.1, binary_map.into_raw_vec())
-       .ok_or_else(|| OcrError::ProcessingError("Failed to create GrayImage from binary map".to_string()))?;
-        
-    // 3. 輪郭抽出 (cv2.findContours の代替) [59, 60]
-    let contours: Vec<imageproc::contours::Contour<i32>> = 
-        imageproc::contours::find_contours::<i32>(&gray_image); [6, 7, 61, 8, 9, 2, 62]
+### 3.5. 切り出し（`crop::crop_quad`、PaddleX `get_rotate_crop_image` 相当）
 
-    let mut polygons: Vec<Polygon> = Vec::new();
-    
-    // 4. ポリゴン変換とオフセット (Unclip)
-    for contour in contours {
-        if contour.points.len() < 3 { continue; }
-        
-        // 4a. imageproc::Contour -> geo_types::Polygon [7]
-        let geo_polygon = contour_to_geo_polygon(&contour);
-        
-        // 4b. オフセット (pyclipper.PyclipperOffset の代替) [63, 18, 64, 45]
-        // i_overlay は Pure Rust のポリゴン演算ライブラリ [10, 65, 11, 66, 67]
-        let offset_polygons = i_overlay::buffering::buffer_polygon(
-            &geo_polygon, 
-            self.config.det_unclip_ratio, // [18]
-            i_overlay::JoinType::Miter(2.0), // Miter join
-            i_overlay::EndType::ClosedPolygon
-        );
-        
-        // 4c. 座標を元画像スケールに戻す
-        for poly in offset_polygons {
-            let scaled_poly = poly.map_coords(|&(x, y)| (x / scale_ratio, y / scale_ratio));
-            // TODO: 面積が小さすぎるポリゴンを除外 [46]
-            polygons.push(scaled_poly);
-        }
-    }
-    
-    Ok(polygons)
-}
-```
+* 幅 = `int(max(|tl-tr|, |bl-br|))`、高さ = `int(max(|tl-bl|, |tr-br|))` とする。
+* 矩形を `(0,0)-(w,h)` に写す透視変換を求め、bicubic で切り出す。
+* `h / w ≥ 1.5` の場合は、反時計回りに 90 度回転する（`np.rot90` と同じ）。
 
-### 3.5. `preprocess_recognition` (アルゴリズム)
+### 3.6. 認識前処理（`RecPreProcessor`、PaddleX `OCRReisizeNormImg` 相当）
 
-```rust
-// 疑似コード
-fn preprocess_recognition(
-    &self,
-    image: &DynamicImage,
-    polygons: &[Polygon],
-) -> Result<Vec<PreprocessedRecInput>, OcrError> {
+1.  縦横比を `r = w / h` として、各切り出しの幅を決める。`r > 320/48` なら `int(48r)`、それ以外は `ceil(48r)` とする。
+2.  バッチの幅は `max(320, 最大の幅)` を上限 3200 で抑え、32 の倍数に切り上げる。切り上げは推論計画の再利用のためで、結果には影響しないことを確認している。
+3.  各切り出しを、`resize_bilinear` で高さ 48 にリサイズする。
+4.  BGR の順に並べ、`(x/255 - 0.5) / 0.5` で正規化する。残りの幅は 0（正規化後の値）で埋める。
+5.  `RecognitionPipeline` は、切り出しを縦横比でソートしてから `rec_batch_size` ごとに分ける。前処理・推論・デコードの各ステージを、`parallel_map` で並列に処理する。並列で動く推論は、`run_single_threaded` を使う。
 
-    let (rec_w, rec_h) = self.config.rec_image_shape; // (例: 320, 48) [19, 20]
+### 3.7. 認識後処理（`CtcGreedyDecoder`）
 
-    // rayon を使ってバッチごとに並列処理 [12, 14, 16]
-    polygons.par_chunks(self.config.rec_batch_size)
-       .map(|poly_chunk| {
-            let mut batch_tensors: Vec<Array3<f32>> = Vec::with_capacity(poly_chunk.len());
-            
-            for polygon in poly_chunk {
-                // 簡易的な矩形クロップ (厳密にはアフィン変換が必要)
-                let bounding_rect = polygon.bounding_rect();
-                let cropped_image = image.crop_imm(
-                    bounding_rect.min().x as u32,
-                    bounding_rect.min().y as u32,
-                    bounding_rect.width() as u32,
-                    bounding_rect.height() as u32,
-                );
-                
-                // アスペクト比を無視して強制リサイズ [51, 5]
-                let resized_image = cropped_image.resize_exact(rec_w, rec_h, image::imageops::FilterType::Lanczos3); [19, 20, 51]
-                
-                // HWC -> NCHW 変換と正規化 (preprocess_detection と同様)
-                let mut array_hwc: Array3<f32> =... ; // [38, 57]
-                array_hwc.par_mapv_inplace(|x| x / 255.0);
-                let array_chw = array_hwc.permuted_axes(); [54, 55]
-                
-                batch_tensors.push(array_chw);
-            }
-            
-            // バッチテンソルを作成
-            let batch_array = ndarray::stack(
-                Axis(0), 
-                &batch_tensors.iter().map(|a| a.view()).collect::<Vec<_>>()
-            ).map_err(|e| OcrError::ProcessingError(e.to_string()))?;
-            
-            Ok(PreprocessedRecInput {
-                batch_tensor: tract_onnx::prelude::Tensor::from_array(batch_array.as_dyn())?,
-                original_polygons: poly_chunk.to_vec(),
-            })
-            
-        })
-       .collect::<Result<Vec<PreprocessedRecInput>, OcrError>>()
-}
-```
+1.  各時刻で、確率が最大のクラスを選ぶ。有効幅を超える時刻は無視する。
+2.  blank（0）と連続する重複を取り除き、辞書で文字に変換する。辞書の範囲外のクラスは、代替文字列 `[UNK]` にする。
+3.  信頼度は、選ばれた文字の確率の平均とする。出力が確率でない場合（ロジット）は、log-sum-exp で softmax を計算する。
 
-### 3.6. `postprocess_recognition` (アルゴリズム)
+### 3.8. 方向分類（`OrientationClassifier`）
 
-```rust
-// 疑似コード
-fn postprocess_recognition(
-    &self,
-    rec_output: &Tensor, // 形状
-) -> Result<Vec<(String, f32)>, OcrError> {
-
-    let logits_view = rec_output.to_array_view::<f32>()?; //[68, 24, 69]
-    let mut results = Vec::with_capacity(logits_view.shape());
-
-    for batch_item_logits in logits_view.outer_iter() { //[14]
-        // 1. ArgMax: 各タイムステップで最も確率の高いインデックスを取得
-        let indices: Vec<usize> = batch_item_logits
-           .argmax_axis(Axis(1)) [14, 16] //
-           .map_err(|e| OcrError::ProcessingError(e.to_string()))?
-           .to_vec();
-            
-        // 2. CTC Greedy Decode [24, 70, 22, 71]
-        let decoded_indices = ctc_greedy_decode(&indices, self.blank_id);
-        
-        // 3. 辞書マッピング
-        let text: String = decoded_indices.iter()
-           .map(|&idx| self.dictionary.get(idx).map_or("", |s| s.as_str()))
-           .collect();
-            
-        // 4. 信頼度計算 (簡易版: ここではダミー値)
-        // (ロジックの複雑化を避けるため、API設計書の定義に従い 0.0-1.0 の値を設定する)
-        let confidence = 1.0; // TODO: 本来は softmax 確率の平均を計算
-        
-        results.push((text, confidence));
-    }
-    
-    Ok(results)
-}
-
-/// CTC Greedy Decode (プライベートヘルパー)
-fn ctc_greedy_decode(indices: &[usize], blank_id: usize) -> Vec<usize> {
-    let mut result = Vec::new();
-    let mut prev_index = usize::MAX;
-    
-    for &index in indices {
-        // 1. blank でない [22, 23]
-        // 2. 前の文字と重複していない [70]
-        if index!= blank_id && index!= prev_index {
-            result.push(index);
-        }
-        prev_index = index;
-    }
-    result
-}
-```
+* 前処理は `inference.yml` に従う。
+  * `ResizeImage.size`: 指定サイズに変形リサイズ
+  * `resize_short` と `CropImage`: 短辺をリサイズしてから中央を切り出す
+* 入力は RGB で、ImageNet の値で正規化する。
+* 出力は確率が最大のラベルとし、ラベル名（`180_degree`、`90` など）を角度に変換する。
+* ページの向きの補正は、`rotate_ccw(angle)`（反時計回りの回転）で行う。これは PaddleX の `rotate_image` と同じである。
 
 ## 4\. エラー処理の詳細
 
-  * **`OcrEngineBuilder::build`**:
-      * **検知**: `det_path`, `rec_path`, `dict_path` が `None`。
-      * **伝達**: `Err(OcrError::ProcessingError)` を返す。
-      * **検知**: `std::fs::read_to_string` が失敗。
-      * **伝達**: `Err(OcrError::IoError)` を返す。
-      * **検知**: `tract_onnx::onnx().model_for_path()` または `.into_runnable()` が失敗。
-      * **伝達**: `tract::Error` を `Err(OcrError::ModelLoadError)` に変換して返す。
-  * **`OcrEngine::run_from_path`**:
-      * **検知**: `image::open` が失敗。
-      * **伝達**: `image::ImageError` を `Err(OcrError::ImageError)` に変換して返す。
-  * **`OcrEngine::run_from_image`**:
-      * **検知**: `self.det_model.run()` または `self.rec_model.run()` が失敗。
-      * **伝達**: `tract::Error` を `Err(OcrError::InferenceError)` に変換して返す。
-      * **検知**: `preprocess_*` / `postprocess_*` 内の `ndarray` 操作 (`permuted_axes`, `stack`, `argmax_axis`) が失敗。
-      * **伝達**: `ndarray::ShapeError` を `Err(OcrError::ProcessingError)` に変換して返す。
-      * **検知**: `imageproc::contours` や `i_overlay::buffering` が論理的に失敗 (例: `GrayImage::from_raw` が `None` を返す)。
-      * **伝達**: `Err(OcrError::ProcessingError)` を返す。
-  * **`OcrError`** (API設計書より):
-      * `IoError(std::io::Error)`
-      * `ImageError(image::ImageError)`
-      * `ModelLoadError(String)` (Tractのエラーメッセージを含む)
-      * `InferenceError(String)` (Tractのエラーメッセージを含む)
-      * `ProcessingError(String)` (Ndarray, Imageproc, iOverlay関連のエラー)
+* すべての公開 API は `Result<_, OcrError>` を返し、ライブラリ内で panic しない。
+  * 例外として、スレッドプールを作れない場合は `catch_unwind` で受け止め、警告を出してシングルスレッドに切り替える。
+* 入力元がメモリの場合、エラーメッセージのパスは `<memory>` と表示する。
+* `inference.yml` に対応していない構文（フロー形式、ブロックスカラー）が含まれていれば、`PaddleConfigError::Syntax` として、行番号付きで報告する。
+* 推論計画キャッシュのロックが汚染されていても（poison）、処理を続ける。キャッシュは不完全な状態にならないためである。

@@ -1,85 +1,94 @@
 # テスト仕様書 (Test Specification): Pure Rust OnnxOCR
 
 作成者: Shion Watanabe  
-日付: 2025-11-09  
+初版: 2025-11-09  
+改訂: 2026-10-03（v0.2.0）  
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 ## 🎯 目的
 
-  * プログラムの品質を保証するため、要件定義書、API設計書、詳細設計書に基づいたテスト戦略と具体的なテストケースを定義する。
-  * 特に、プロジェクトの成否を左右する「Pure Rust」の制約 [4, 5, 6, 7] 下での推論エンジン（`tract`）の互換性という**最重要リスク**を早期に検証・発見する。
-  * 各モジュール（前処理、後処理）のアルゴリズムが、リファレンス実装（Python + OpenCV/Pyclipper）のロジック [8, 9, 10, 11] をPure Rustクレート（`imageproc` [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 11, 24, 25], `i_overlay` [26, 27, 28, 29, 30, 17, 31, 32]）で正しく代替できていることを確認し、バグの早期発見とデグレード（意図しない機能低下）を防止する。
+  * 品質を保証するためのテスト戦略と、実在するテストケースを定義する。
+  * PaddleOCR 本体（Python）との出力の一致を、自動テストで継続的に確認する。
+  * CI で、Linux と Windows、MSRV、WebAssembly のビルドを常に検証する。
 
 -----
 
 ### 1\. テスト方針
 
-  * **実施するテストの種類**:
-
-    1.  **技術検証 (PoC) テスト**:
-          * 最優先で実施するGo/No-Goテスト。
-          * `tract-onnx` [19, 33, 34] が、`PP-OCRv5 Server`の認識モデル（`rec.onnx`: SVTR\_HGNet [35, 36, 37]）をロード・実行できるかという、プロジェクトの**致命的リスク**（要求オペレータ `LayerNormalization` [7, 38, 39, 40, 41, 42] / `Scan` [38, 43] 等のサポート状況 [38]）を検証する。
-    2.  **単体テスト (Unit Tests)**:
-          * `cargo test` を使用し、各モジュールおよびプライベート関数（詳細設計書 3.0）のロジックを個別に検証する。
-          * 特に、`preprocess_*` の画像リサイズ [44, 45, 46, 47, 48]・軸転置 [26, 49, 50, 51, 52, 53] ロジック、`postprocess_*` のポリゴンオフセット [27, 29] およびCTC Greedyデコード [54, 55, 16, 56, 31, 57, 58] のアルゴリズムを重点的にテストする。
-    3.  **結合テスト (Integration Tests)**:
-          * `tests/` ディレクトリに配置し、`cargo test` で実行する。
-          * API設計書で定義された公開API（`OcrEngineBuilder`, `OcrEngine`）が、実際のモデルファイル（`.onnx`）と画像ファイルを使用して、E2E（End-to-End）で正しく動作することを検証する。
-
-  * **テストカバレッジ（網羅率）の目標値**:
-
-      * コアロジック（前処理、後処理、CTCデコード）を含むモジュール群において、**90%以上**を目標とする。
-
-  * **使用するテストフレームワーク**:
-
-      * Rust 標準のテストハーネス (`cargo test` および `#[test]` アトリビュート)。
+  * **実施するテストの種類**
+    1.  **単体テスト**（`src/**`）: 前処理・後処理、YAML の解析、辞書、CTC、矩形の算出と切り出し、リサイズ、計画キャッシュ、方向分類のラベル変換と座標の戻し。
+    2.  **モデルを使う結合テスト**（`tests/*.rs`）: 実際の ONNX モデルと画像で、パイプライン全体を確認する。
+    3.  **PaddleOCR との一致テスト**（`tests/paddle_parity.rs`）: PaddleOCR 3.7 の出力（`tests/reference/*.json`）と比較する。
+    4.  **CLI テスト**（`tests/ocr_smoke.rs`）: `ocr_smoke --help`。
+    5.  **ビルドの検証**（CI）: MSRV 1.91、`--no-default-features`、`wasm32-unknown-unknown`、`wasm32-wasip1`。
+  * **フィクスチャがない場合**: 必要なモデルがないテストは、メッセージを出してスキップする。実行時間の長いもの（small / medium、傾き補正）は `#[ignore]` にしている。
+  * **フレームワーク**: Rust 標準のテストハーネス。推論を含むため、`cargo test --release` を推奨する。
 
 ### 2\. テスト環境
 
-  * **OS**: Linux (Ubuntu 22.04+), macOS (12.0+), Windows (10, 11)
-  * **言語バージョン**: Rust (Stable 1.70.0 以降)
-  * **依存プログラム（テストアセット）**:
-      * **テストモデル**: `jingsongliujing/OnnxOCR` [1] が推奨する `PP-OCRv5_Server-ONNX` [59, 35, 36, 37, 60, 61, 62] モデルセット。
-          * `det.onnx` (DBNet [59, 63, 64, 65, 11])
-          * `rec.onnx` (SVTR\_HGNet [35, 36, 37])
-          * `ppocrv5_dict.txt` [1, 3, 38, 59, 35, 36, 66, 67, 68, 69, 70, 71]
-      * **テスト画像**:
-          * 高解像度の風景画像 (JPEG, PNG)
-          * テキストが密集したドキュメント画像
-          * テキストが含まれない画像（空白の画像）
-          * 破損した画像ファイル
+  * **OS**: Linux（ubuntu-latest）、Windows（windows-latest、開発機は Windows 11）
+  * **言語**: Rust stable（MSRV 1.91）
+  * **テスト用アセット**（`scripts/fetch_fixtures.sh` で取得。`tests/fixtures/` は git 管理外）
+    * 既定（約 35MB）:
+      * PP-OCRv6 tiny の det / rec
+      * PP-OCRv5 mobile の det / rec / 辞書（旧形式のファイル構成）
+      * 方向分類器 2 種（`PP-LCNet_x1_0_doc_ori`、`PP-LCNet_x0_25_textline_ori`）
+      * `images/general_ocr_002.jpg`
+    * `--all` を付けると追加で取得する:
+      * PP-OCRv6 small / medium
+      * PP-OCRv5 mobile / server（ディレクトリ形式）
+      * `PP-LCNet_x1_0_textline_ori`
+      * `images/ja.jpg`
+  * **PaddleOCR の参照データ**: uv の `.venv`（`scripts/requirements-reference.txt`）で `scripts/paddleocr_reference.py` を実行して作る。生成した JSON はコミットする。
 
 ### 3\. テストケース
 
 #### 3.1. 技術検証 (PoC) テスト
 
-| テスト項目                                             | テスト条件                                                                             | 期待結果                                                                                                                                                                                                                                                          | 手順                               |
-| :----------------------------------------------------- | :------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------- |
-| **[PoC-01]** SVTR認識モデルのロード検証 (最重要リスク) | `OcrEngine::load_model` (内部) を `rec.onnx` (SVTR\_HGNet [35, 36, 37]) で実行する。   | `Ok(RunnableModel)` が返る。<br> **(失敗時)** `Err(OcrError::ModelLoadError)` が返る。この場合、`tract` [19, 33, 34] が要求オペレータ (例: `LayerNormalization` [7, 38, 39, 40, 41, 42]) をサポートしておらず、プロジェクトの**続行が困難**であることを意味する。 | `cargo test test_load_svtr_model`  |
-| **[PoC-02]** DBNet検出モデルのロード検証               | `OcrEngine::load_model` (内部) を `det.onnx` (DBNet [59, 63, 64, 65, 11]) で実行する。 | `Ok(RunnableModel)` が返る。                                                                                                                                                                                                                                      | `cargo test test_load_dbnet_model` |
+| テスト | 内容 | 期待結果 |
+| :--- | :--- | :--- |
+| `tests::dbnet_dummy_inference_runs_successfully`（ignored） | `models/ppocrv5/det.onnx` をゼロ入力で推論する | 出力を得られる |
+| `tests::svtr_dummy_inference_runs_successfully`（ignored） | `models/ppocrv5/rec.onnx` をゼロ入力で推論する | 出力の値が有限である |
+| `detection::tests::detection_inference_runs` / `recognition::tests::recognition_inference_runs` | v5 の det / rec を実際の入力形状で推論する | 出力の形状が入力と整合する |
 
 #### 3.2. 単体テスト (Unit Tests)
 
-| テスト項目                                 | テスト条件                                                                            | 期待結果                                                                                                                                               | 手順                          |
-| :----------------------------------------- | :------------------------------------------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------- |
-| \*\*\*\* 検出前処理: リサイズ (長辺制限)   | 1920x1080 (W\>H) の画像を入力。<br>`det_limit_side_len = 960` [72, 73, 74, 75, 76]。  | リサイズ後の寸法が `(960, 540)` となる。<br>`scale_ratio` が `0.5` となる。                                                                            | `preprocess_detection(img)`   |
-| \*\*\*\* 検出前処理: リサイズ (短辺画像)   | 800x600 の画像を入力。<br>`det_limit_side_len = 960`。                                | リサイズ後の寸法が `(800, 600)` となる。<br>`scale_ratio` が `1.0` となる。                                                                            | `preprocess_detection(img)`   |
-| \*\*\*\* 検出前処理: テンソル変換          | `(960, 540)` にリサイズされた画像。                                                   | 出力テンソルの形状が ``(NCHW) [26, 49, 50, 51, 52, 53] となる。<br>テンソルの値が `0.0`～`1.0` [77, 48] に正規化 [26, 45, 78, 79, 80, 24] されている。 | `preprocess_detection(img)`   | | **** 検出後処理: 輪郭抽出 | `imageproc::find_contours` [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 11, 24, 25, 81] を使用し、既知の二値化マップ（`GrayImage`）を入力。 | 期待される数の `Contour` [12, 13, 14, 22] が返る。 | `postprocess_detection(...)` | | **** 検出後処理: ポリゴンオフセット | 既知の `geo_types::Polygon` [82, 83, 84, 29, 85] を `i_overlay::buffering` [26, 27, 29, 17, 31] に入力。<br>`det_unclip_ratio = 1.5` [35, 8, 9, 86, 10, 11]。 | ポリゴンが正しく拡大（オフセット）されている。 | `postprocess_detection(...)` | | **** 検出後処理: スケール復元 | 検出されたポリゴン座標（リサイズ後）と `scale_ratio = 0.5` を入力。 | ポリゴンの各座標が `1 / 0.5 = 2.0` 倍され、元画像スケールに正しく復元されている。 | `postprocess_detection(...)` | | **** 辞書ロード | 有効な `ppocrv5_dict.txt` [1, 3, 38, 59, 35, 36, 66, 67, 68, 69, 70, 71] のパスを入力。 | `Ok((Vec<String>, usize))` が返る。<br>`blank_id` [35, 55, 56] が `dictionary.len()` [55] と一致する。 | `load_dictionary(path)` | | **** CTC Greedyデコード (正常系) | 入力インデックス:``<br>`blank_id = 0` | 出力インデックス: `[1, 2, 3]` [54, 16, 31] | `ctc_greedy_decode(...)` 
-| \*\*\*\* CTC Greedyデコード (重複なし)     | 入力インデックス: `[1, 2, 3]`<br>`blank_id = 0`                                       | 出力インデックス: `[1, 2, 3]`                                                                                                                          | `ctc_greedy_decode(...)`      |
-| \*\*\*\* CTC Greedyデコード (ブランクのみ) | 入力インデックス: `` <br>`blank_id = 0`                                               | 出力インデックス:  `` (空のVec)                                                                                                                        | `ctc_greedy_decode(...)`      |
-| \*\*\*\* 認識前処理: リサイズ (強制)       | 200x100 (W, H) のクロップ画像を入力。<br>`rec_image_shape = (320, 48)` [35, 36, 77]。 | `image::resize_exact` [46] により、アスペクト比が無視され `(320, 48)` にリサイズされる。                                                               | `preprocess_recognition(...)` |
-| \*\*\*\* 認識前処理: バッチ化              | 10個のポリゴンを入力。<br>`rec_batch_size = 8`。                                      | `Vec<PreprocessedRecInput>` が返る。<br>1番目の要素: `batch_tensor` が `` 。<br>2番目の要素: `batch_tensor` が  ``。                                   | `preprocess_recognition(...)` |
+| 対象 | 主なテスト | 確認内容 |
+| :--- | :--- | :--- |
+| 検出前処理 | `resize_long_side_to_limit`、`keep_original_size_when_within_limit`、`detection_dims_round_to_nearest_multiple_of_32`、`min_limit_*`、`max_side_limit_caps_native_resolution`、`tensor_shape_and_normalization`、`detection_uses_bgr_channel_order_by_default` | 32 の倍数への丸め（偶数側への丸め）と引き伸ばし、縦横の倍率、ImageNet 正規化、BGR の順 |
+| 認識前処理 | `recognition_*`（6 件） | 可変幅（1200px → 1216）、上限、パディングの値、範囲外・面積 0 のエラー |
+| 検出後処理 | `extracts_single_square_contour`、`filters_small_regions`、`box_threshold_discards_low_confidence_regions`、`max_candidates_keeps_largest_regions`、`unclip_makes_polygon_larger`、`scaler_*` | 輪郭の抽出、スコアによる除外、膨張、座標の変換 |
+| 切り出し | `crop::tests::*`（5 件） | 角の順序、30 度回転した矩形の復元、退化したケース、透視変換、縦長の回転 |
+| リサイズ | `imgproc::tests::*`（2 件） | OpenCV の bilinear と同じ値になる（拡大・縮小） |
+| YAML / 辞書 | `paddle_config::tests::*`（7 件）、`dictionary::*`（10 件） | クオートとエスケープ、U+3000、入れ子、アンカー、分類器の項目、space の追加、重複 |
+| CTC | `ctc::tests::*`（5 件） | 重複とブランクの除去、信頼度、範囲外のクラス |
+| その他 | `onnx_model::tests::*`、`orientation::tests::*`、`engine::thread_safety::engine_is_send_and_sync` | LRU キャッシュ、角度の変換、`Send + Sync` |
 
 #### 3.3. 結合テスト (Integration Tests)
 
-| テスト項目                                   | テスト条件                                                                                       | 期待結果                                                                                                                                                                                        | 手順                                                  |
-| :------------------------------------------- | :----------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------- |
-| \*\*\*\* ビルダー (正常系)                   | `OcrEngineBuilder::build()` に、有効な `det.onnx`, `rec.onnx`, `dict.txt` のパスを指定する。     | `Ok(OcrEngine)` が返る。                                                                                                                                                                        | `OcrEngineBuilder::new()...build()`                   |
-| \*\*\*\* ビルダー (異常系: モデルパス)       | `det.onnx` のパスに存在しないファイルを指定する。                                                | `Err(OcrError::IoError)` が返る。                                                                                                                                                               | `OcrEngineBuilder::new()...build()`                   |
-| \*\*\*\* ビルダー (異常系: 辞書パス)         | `dict.txt` のパスに存在しないファイルを指定する。                                                | `Err(OcrError::IoError)` が返る。                                                                                                                                                               | `OcrEngineBuilder::new()...build()`                   |
-| \*\*\*\* ビルダー (異常系: モデルロード失敗) | **[PoC-01]** が失敗した場合、`rec.onnx` のパスを指定する。                                       | `Err(OcrError::ModelLoadError)` が返る。                                                                                                                                                        | `OcrEngineBuilder::new()...build()`                   |
-| \*\*\*\* E2E実行 (正常系: `run_from_path`)   | `OcrEngine` をビルドし、テキストを含む既知のテスト画像パスで `run_from_path` を実行する。        | `Ok(Vec<OcrResult>)` が返る。<br>`Vec` は空ではない。<br>返された `OcrResult.text` が画像の既知のテキストと一致する。<br>`OcrResult.bounding_box` [82, 83, 84, 87, 29, 85] が妥当な座標を持つ。 | `engine.run_from_path("tests/assets/test_image.jpg")` |
-| \*\*\*\* E2E実行 (正常系: `run_from_image`)  | `image::open` で画像を `DynamicImage` [46, 47, 88] としてロードし、`run_from_image` で実行する。 | `Ok(Vec<OcrResult>)` が返る。<br>\*\*\*\* と同じテキスト結果が得られる。                                                                                                                        | `engine.run_from_image(&img)`                         |
-| \*\*\*\* E2E実行 (正常系: テキストなし)      | テキストを一切含まない空白の画像で `run_from_path` を実行する。                                  | `Ok(Vec<OcrResult>)` が返る。<br>`Vec` は空 (`.is_empty() == true`)。                                                                                                                           | `engine.run_from_path("tests/assets/blank.jpg")`      |
-| \*\*\*\* E2E実行 (異常系: 画像パス)          | 存在しない画像パスで `run_from_path` を実行する。                                                | `Err(OcrError::IoError)` が返る。                                                                                                                                                               | `engine.run_from_path("invalid_path.jpg")`            |
-| \*\*\*\* E2E実行 (異常系: 破損画像)          | 破損した（画像としてデコードできない）ファイルで `run_from_path` を実行する。                    | `Err(OcrError::ImageError)` が返る。                                                                                                                                                            | `engine.run_from_path("tests/assets/corrupt.jpg")`    |
+| テスト | 条件 | 期待結果 |
+| :--- | :--- | :--- |
+| `engine::tests::*` | PP-OCRv5 mobile（ファイル個別指定） | ビルドできること、異常系のエラー、白紙画像を処理できること、所要時間を報告すること |
+| `integration_test::ocr_pipeline_smoke_test` | PP-OCRv5 mobile で搭乗券を処理する | `BOARDING` を含む結果が得られる |
+| `integration_test::ocr_pipeline_reports_missing_image` / `ocr_builder_rejects_missing_models` | 存在しない画像やモデル | `Io` / `ImageDecode` / ビルドのエラー |
+| `ppocrv6::detection_configs_*` / `recognition_configs_*` | v6 の YAML | BGR、ImageNet の値、辞書の件数（6,904 / 18,708） |
+| `ppocrv6::recognition_class_count_matches_dictionary` | tiny_rec | 出力のクラス数が、blank + 辞書 + space と一致する |
+| `ppocrv6::tiny_pipeline_reads_boarding_pass`（small / medium は ignored） | 搭乗券 | 主要な文字列と、空白を含む末尾の行を読める |
+| `ppocrv6::model_config_postprocess_values_respect_explicit_overrides` | tiny の YAML | 既定値、YAML の値、明示的な指定の優先順位が正しい |
+| `ppocrv6::rotated_crops_read_tilted_text`（ignored） | 10 度傾けた画像 | 回転補正ありの方が、正立画像の結果を多く再現する |
+| `ppocrv6::doc_orientation_restores_rotated_pages` | 90 / 180 / 270 度回転したページ | 角度を正しく判定し、テキストを読める |
+| `ppocrv6::textline_orientation_fixes_upside_down_lines` | 上下逆の画像 | 分類器を使うと主要な文字列を読める |
+| `ppocrv6::in_memory_models_match_file_based_engine` | バイト列で渡す | ファイルから読み込んだ場合と結果が一致し、パスは `None` |
+| `ppocrv6::engine_can_be_shared_between_threads` / `thread_count_does_not_change_results` | 3 スレッドから同時に使う / 1 スレッドと 4 スレッド | 結果が一致する |
+| `ppocrv6::ppocrv5_yaml_dictionary_matches_text_dictionary` | v5 の YAML 辞書とテキスト辞書 | 全 18,383 件の順序が一致する |
+| `paddle_parity::matches_paddleocr_reference_outputs` | 参照 JSON がある (モデル, 画像) の組 | 検出 F1 ≥ 0.90、文字類似度 ≥ 0.93（v6 tiny の日本語は文字の比較を除外） |
+| `ocr_smoke::ocr_smoke_help_succeeds` | `--help` | 終了コード 0 で、使い方を表示する |
+
+#### 3.4. 実行方法
+
+```bash
+scripts/fetch_fixtures.sh                    # 既定のテスト用（約 35MB）
+cargo test --release --workspace             # CI と同じ
+cargo test --release --test ppocrv6 -- --ignored            # small / medium / 傾き
+cargo test --release --test paddle_parity -- --nocapture    # 本家との比較表を表示
+```
