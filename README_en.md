@@ -1,7 +1,8 @@
 # `pure-onnx-ocr`
 
 Author: Shion Watanabe  
-Date: 2025-11-09  
+First version: 2025-11-09  
+Revised: 2026-10-03 (v0.2.0)  
 Repository: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CTC recognition models without relying on C/C++ runtimes. **PP-OCRv5 and PP-OCRv6 (tiny / small / medium) ONNX exports are supported.** The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.

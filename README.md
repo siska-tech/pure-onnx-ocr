@@ -1,7 +1,8 @@
 # `pure-onnx-ocr` (Pure Rust OnnxOCR)
 
 作成者: Shion Watanabe  
-日付: 2025-11-09  
+初版: 2025-11-09  
+改訂: 2026-10-03（v0.2.0）  
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -148,7 +149,7 @@ cargo run --release --bin ocr_smoke -- path/to/image.jpg \
   --det-thresh 0.3 --det-box-thresh 0.6
 ```
 
-ベンチマーク用途では `--benchmark` フラグを付与します。総時間・画像デコード・DBNet / SVTR の各ステージ（前処理・推論・後処理）が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
+ベンチマーク用途では `--benchmark` フラグを付与します。総時間、画像デコード、方向分類、検出と認識の各ステージ（前処理・推論・後処理）の所要時間が `[INFO] benchmark.*` 形式で出力され、既存のテキスト出力と併置されます。
 
 ```bash
 cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg 
@@ -250,7 +251,7 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 | `OcrEngineBuilder` | モデル・辞書・パラメータを設定し、`OcrEngine` を構築するためのビルダー。`det_model_dir` / `rec_model_dir` で PaddleOCR のモデルディレクトリを指定できます。 |
 | `OcrEngine`        | 検出・認識パイプラインを統合したファサード。`run_from_path` と `run_from_image` を提供します。 |
 | `OcrRunWithMetrics`| OCR 実行結果とステージ別メトリクス (`OcrTimings`) をまとめて返すヘルパー構造体。               |
-| `OcrTimings`       | 全体時間・画像デコード時間・DBNet / SVTR の各ステージ時間を集約したメトリクス。                 |
+| `OcrTimings`       | 全体・画像デコード・方向分類・検出と認識の各ステージの所要時間。                 |
 | `StageTimings`     | 個別ステージ（前処理・推論・後処理）の所要時間を表すユーティリティ。                            |
 | `OcrResult`        | 認識された単一テキスト領域の結果 (`text`, `confidence`, `bounding_box`) を保持します。         |
 | `OcrError`         | ライブラリ全体で発生し得るエラーをカプセル化した列挙型です。                                   |
