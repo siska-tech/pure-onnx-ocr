@@ -529,6 +529,73 @@ impl OcrEngine {
         &self.config
     }
 
+    /// Compiles the inference plans that the first run on a `width` x
+    /// `height` image would otherwise compile, so that run starts at warm
+    /// speed.
+    ///
+    /// The engine compiles a plan per input shape on first use (roughly
+    /// 0.1-1 s each, depending on the model). This prepares the detection
+    /// plan for the image size, the recognition plan for text lines that
+    /// fit the minimum recognition width (most lines), and the orientation
+    /// classifiers when configured. The plans compile in parallel on the
+    /// engine's thread pool. Wider text lines, other image sizes and
+    /// documents rotated by 90 or 270 degrees still compile their plans on
+    /// first use. Results are unaffected: the same plans are used either way.
+    ///
+    /// Call it once after [`OcrEngineBuilder::build`], for example while a
+    /// server starts up. It is not needed for correctness.
+    pub fn warmup(&self, width: u32, height: u32) -> Result<(), OcrError> {
+        enum Job {
+            Detection(u32, u32),
+            Recognition(usize, u32),
+            DocOrientation,
+            TextlineOrientation(usize),
+        }
+
+        let (det_width, det_height) = self
+            .detection
+            .preprocessor
+            .resized_dims(width.max(1), height.max(1));
+        let rec_batch = self.config.rec_batch_size.max(1);
+        let mut jobs = vec![
+            Job::Detection(det_width, det_height),
+            Job::Recognition(rec_batch, self.recognition.preprocessor.min_batch_width()),
+        ];
+        if self.doc_orientation.is_some() {
+            jobs.push(Job::DocOrientation);
+        }
+        if self.textline_orientation.is_some() {
+            jobs.push(Job::TextlineOrientation(rec_batch));
+        }
+
+        // Compilation itself is single-threaded, so the jobs run side by
+        // side on the pool.
+        crate::threading::parallel_map(&self.recognition.executor, &jobs, |job| match *job {
+            Job::Detection(w, h) => self
+                .detection
+                .session
+                .prepare_plan(w, h)
+                .map_err(|source| OcrError::DetectionInference { source }),
+            Job::Recognition(batch, w) => self
+                .recognition
+                .session
+                .prepare_plan(batch, w)
+                .map_err(|source| OcrError::RecognitionInference { source }),
+            Job::DocOrientation => self
+                .doc_orientation
+                .as_ref()
+                .map_or(Ok(()), |classifier| classifier.prepare_plan(1))
+                .map_err(|source| OcrError::OrientationInference { source }),
+            Job::TextlineOrientation(batch) => self
+                .textline_orientation
+                .as_ref()
+                .map_or(Ok(()), |classifier| classifier.prepare_plan(batch))
+                .map_err(|source| OcrError::OrientationInference { source }),
+        })
+        .into_iter()
+        .collect()
+    }
+
     /// Returns the path used for the detection model.
     ///
     /// `None` when the model was supplied as bytes.

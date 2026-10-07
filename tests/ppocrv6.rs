@@ -541,3 +541,38 @@ fn thread_count_does_not_change_results() {
     assert!(!single.is_empty());
     assert_eq!(read(4), single);
 }
+
+#[test]
+fn warmup_does_not_change_results() {
+    let (Some(det), Some(rec), Some(image_path)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        sample_image(),
+    ) else {
+        return;
+    };
+    let engine = || {
+        OcrEngineBuilder::new()
+            .det_model_dir(&det)
+            .rec_model_dir(&rec)
+            .build()
+            .unwrap()
+    };
+    let read = |engine: &pure_onnx_ocr::OcrEngine| {
+        engine
+            .run_from_path(&image_path)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.text, r.confidence.to_bits()))
+            .collect::<Vec<_>>()
+    };
+    let cold = read(&engine());
+    assert!(!cold.is_empty());
+
+    let warmed = engine();
+    let (width, height) = image::image_dimensions(&image_path).unwrap();
+    warmed.warmup(width, height).unwrap();
+    // Degenerate sizes are clamped instead of failing.
+    warmed.warmup(0, 0).unwrap();
+    assert_eq!(read(&warmed), cold);
+}

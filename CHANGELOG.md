@@ -7,16 +7,28 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `OcrEngine::warmup(width, height)` compiles the detection plan for an
+  image size, the recognition plan for text lines of the minimum width and
+  the orientation classifiers' plans ahead of the first run.
+
 ### Changed
 
 - The default number of inference threads is now the number of logical CPUs
   capped at 16 (was 8). Recognition runs batches in parallel and keeps
   scaling past 8 threads: end-to-end time dropped by 3-18% on a 16-thread
   i7-1360P with identical output. Machines with 8 or fewer logical CPUs are
-  unaffected. Peak memory during the first run grows (e.g. PP-OCRv6 medium
-  1.0 GB to 1.6 GB) because more recognition plans compile at once; memory
-  after the first run is unchanged. `inference_threads(8)` restores the old
-  behaviour.
+  unaffected. `inference_threads(8)` restores the old behaviour.
+
+### Fixed
+
+- Threads that need the same not-yet-compiled plan now wait for a single
+  compilation instead of each compiling its own copy. On a cold engine,
+  most recognition batches share one width, so an image used to compile
+  the same plan up to 16 times: the first run is now 10-23% faster and its
+  peak memory is back to the 8-thread level (PP-OCRv6 medium 1.6 GB to
+  1.0 GB).
 
 ## [0.2.1] - 2026-10-03
 

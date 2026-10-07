@@ -120,6 +120,7 @@ $env:PATH = "<venv>\Lib\site-packages\openvino\libs;$env:PATH"
 | :--- | :--- | :--- |
 | `--threads N` | pure | 推論スレッド数 |
 | `--rec-batch-size N` | 両方 | 認識のバッチサイズ |
+| `--warmup` | pure | 読み込みの後に、最初の画像のサイズで `OcrEngine::warmup` を呼ぶ（時間は `warmup_ms` に別に記録） |
 | `--ov-threads N` | OV | `INFERENCE_NUM_THREADS`（0 は自動） |
 | `--ov-det-hint` / `--ov-rec-hint` | OV | `PERFORMANCE_HINT` |
 | `--ov-rec-requests N` | OV | 並列に使う request の数（0 は最適値） |

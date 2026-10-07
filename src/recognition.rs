@@ -8,7 +8,7 @@ use crate::ctc::{
     CtcGreedyDecoder, CtcGreedyDecoderConfig, CtcGreedyDecoderError, DecodedSequence,
 };
 use crate::dictionary::RecDictionary;
-use crate::onnx_model::PlanCache;
+use crate::onnx_model::SharedPlanCache;
 use crate::preprocessing::PreprocessedRecBatch;
 
 /// Default number of compiled recognition plans (one per batch size and width) kept in memory.
@@ -33,7 +33,7 @@ pub struct RecInferenceOutput {
 pub struct RecInferenceSession {
     base_model: InferenceModel,
     input_height: u32,
-    cache: std::sync::Mutex<PlanCache<(usize, u32)>>,
+    cache: SharedPlanCache<(usize, u32)>,
     executor: crate::threading::Executor,
 }
 
@@ -98,7 +98,7 @@ impl RecInferenceSession {
         Ok(Self {
             base_model: inference_model,
             input_height,
-            cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_REC_PLAN_CACHE)),
+            cache: SharedPlanCache::new(DEFAULT_REC_PLAN_CACHE),
             executor: crate::threading::Executor::SingleThread,
         })
     }
@@ -238,12 +238,18 @@ impl RecInferenceSession {
     /// Sets how many compiled plans (one per input shape) are kept in memory.
     /// The least recently used plan is dropped when the limit is exceeded.
     pub fn set_plan_cache_capacity(&self, capacity: usize) {
-        crate::onnx_model::lock_cache(&self.cache).set_capacity(capacity);
+        self.cache.set_capacity(capacity);
+    }
+
+    /// Compiles and caches the plan for batches of `batch_size` crops
+    /// padded to `width`.
+    pub(crate) fn prepare_plan(&self, batch_size: usize, width: u32) -> TractResult<()> {
+        self.runnable_for_dims(batch_size, width).map(drop)
     }
 
     /// Returns the number of compiled plans currently cached.
     pub fn cached_plan_count(&self) -> usize {
-        crate::onnx_model::lock_cache(&self.cache).len()
+        self.cache.len()
     }
 
     fn runnable_for_dims(
@@ -251,10 +257,11 @@ impl RecInferenceSession {
         batch_size: usize,
         width: u32,
     ) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get((batch_size, width)) {
-            return Ok(plan);
-        }
+        self.cache
+            .get_or_compile((batch_size, width), || self.compile(batch_size, width))
+    }
 
+    fn compile(&self, batch_size: usize, width: u32) -> TractResult<Arc<TypedRunnableModel>> {
         log::debug!(
             "[RecInfer] Preparing runnable model for batch {} width {}",
             batch_size,
@@ -262,7 +269,6 @@ impl RecInferenceSession {
         );
 
         // Height is fixed per session, so batch size and width identify a plan.
-        // Compilation happens without holding the cache mutex.
         let mut model = self.base_model.clone();
         model.set_input_fact(
             0,
@@ -284,9 +290,6 @@ impl RecInferenceSession {
             .into_optimized()?
             .into_runnable()?;
         log::debug!("[RecInfer] Compiled plan in {:?}", compile_start.elapsed());
-
-        crate::onnx_model::lock_cache(&self.cache).insert((batch_size, width), Arc::clone(&plan));
-
         Ok(plan)
     }
 }

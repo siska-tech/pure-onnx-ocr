@@ -33,7 +33,7 @@ The crate is `pure_onnx_ocr`, and the main types are re-exported at the root.
 | Type | Main members |
 | :--- | :--- |
 | `OcrEngineBuilder` | `new`, model sources and parameters (below), `build` |
-| `OcrEngine` | `run_from_path`, `run_from_image`, `run_from_bytes`, `run_with_metrics_{path,image,bytes}`, `config`, `det_model_path`, `rec_model_path`, `dictionary_path`, `rec_batch_size` |
+| `OcrEngine` | `run_from_path`, `run_from_image`, `run_from_bytes`, `run_with_metrics_{path,image,bytes}`, `warmup`, `config`, `det_model_path`, `rec_model_path`, `dictionary_path`, `rec_batch_size` |
 | `OcrResult` | `text: String`, `confidence: f32`, `bounding_box: Polygon<f64>` |
 | `OcrRunWithMetrics` | `results`, `timings: OcrTimings`, `doc_orientation_angle: Option<u32>` |
 | `OcrTimings` / `StageTimings` | Total time, decode time, orientation time, and preprocess / inference / post-process time for each pipeline |
@@ -107,6 +107,7 @@ The crate is `pure_onnx_ocr`, and the main types are re-exported at the root.
 
 - `run_*` runs synchronously. The engine is `Send + Sync`, so it can be shared in an `Arc`.
 - `config()` returns the effective configuration, after the YAML values are applied.
+- `warmup(width, height)` compiles the detection plan for that image size, the recognition plan for minimum-width lines and the orientation classifiers ahead of the first run. Results are unchanged.
 - The path getters return `Option<&Path>`, which is `None` for in-memory inputs.
 
 ## 3. Example

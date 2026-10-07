@@ -175,6 +175,7 @@ def aggregate(reports: list[dict]) -> dict:
             "first": {s: med([f[s] for f in firsts]) for s in STAGES},
         }
     out["load_ms"] = med([r["load_ms"] for r in reports])
+    out["warmup_ms"] = med([r.get("warmup_ms", 0.0) for r in reports])
     out["images_per_s"] = med([r["warm"]["images_per_s"] for r in reports])
     out["avg_cores_busy"] = med([r["warm"]["avg_cores_busy"] for r in reports])
     out["threads_after_load"] = med([r["after_load"]["threads"] for r in reports])
@@ -300,8 +301,9 @@ def markdown_tail(summary: dict, models: list[str], images: list[str]) -> list[s
     L.append("")
 
     L.append("## Load, cold start, resources\n")
-    L.append("| Model | Config | load ms | first run ms (img1) | load+first ms | throughput img/s | avg cores busy | threads (after run) | peak WS MB | peak private MB |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| Model | Config | load ms | warmup ms | first run ms (img1) | load+warmup+first ms | throughput img/s "
+             "| avg cores busy | threads (after run) | peak WS MB | peak private MB |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for m in models:
         for c in CONFIGS:
             key = f"{c}/{m}"
@@ -309,8 +311,9 @@ def markdown_tail(summary: dict, models: list[str], images: list[str]) -> list[s
                 continue
             a = agg[key]
             first = a["images"][images[0]]["first"]["total"]
+            warmup = a.get("warmup_ms", 0.0)
             L.append(
-                f"| {m} | {c} | {a['load_ms']:.0f} | {first:.0f} | {a['load_ms'] + first:.0f} | "
+                f"| {m} | {c} | {a['load_ms']:.0f} | {warmup:.0f} | {first:.0f} | {a['load_ms'] + warmup + first:.0f} | "
                 f"{a['images_per_s']:.2f} | {a['avg_cores_busy']:.1f} | {a['threads_after_pipeline']:.0f} | "
                 f"{a['peak_working_set_mb']:.0f} | {a['peak_private_mb']:.0f} |"
             )

@@ -11,6 +11,7 @@
 //!     [--images general_ocr_002.jpg,ja.jpg] [--runs 5] [--model-only-runs 10]
 //!     [--threads N]            pure: inference threads (default: crate default)
 //!     [--rec-batch-size N]     both: recognition batch size (default 1 = crate default)
+//!     [--warmup]               pure: call OcrEngine::warmup for the first image's size after loading
 //!     [--ov-threads N]         ov: INFERENCE_NUM_THREADS (0 = auto)
 //!     [--ov-det-hint LATENCY]  ov: PERFORMANCE_HINT for detection
 //!     [--ov-rec-hint LATENCY]  ov: PERFORMANCE_HINT for recognition
@@ -53,6 +54,7 @@ struct Args {
     model_only_runs: usize,
     threads: Option<usize>,
     rec_batch_size: usize,
+    warmup: bool,
     ov_threads: usize,
     ov_det_hint: String,
     ov_rec_hint: String,
@@ -71,6 +73,7 @@ fn parse_args() -> Args {
         model_only_runs: 10,
         threads: None,
         rec_batch_size: 1,
+        warmup: false,
         ov_threads: 0,
         ov_det_hint: "LATENCY".into(),
         ov_rec_hint: "LATENCY".into(),
@@ -90,6 +93,7 @@ fn parse_args() -> Args {
             "--model-only-runs" => a.model_only_runs = value().parse().expect("number"),
             "--threads" => a.threads = Some(value().parse().expect("number")),
             "--rec-batch-size" => a.rec_batch_size = value().parse().expect("number"),
+            "--warmup" => a.warmup = true,
             "--ov-threads" => a.ov_threads = value().parse().expect("number"),
             "--ov-det-hint" => a.ov_det_hint = value(),
             "--ov-rec-hint" => a.ov_rec_hint = value(),
@@ -476,6 +480,12 @@ fn main() -> Result<()> {
             }
             let engine = builder.build()?;
             report["load_ms"] = json!(ms(load_start.elapsed()));
+            if args.warmup {
+                let (width, height) = images[0].1.dimensions();
+                let warmup_start = Instant::now();
+                engine.warmup(width, height)?;
+                report["warmup_ms"] = json!(ms(warmup_start.elapsed()));
+            }
             threads_used = engine.config().inference_threads;
             let (resolved, _) =
                 resolve_config(&det_dir, &rec_dir, args.rec_batch_size, threads_used)?;

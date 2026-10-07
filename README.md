@@ -190,6 +190,7 @@ cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg
 | 行の上下補正（0/180） | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | 無効 |
 | 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 16）。WebAssembly では 1 |
 | 推論計画のキャッシュ上限 | `plan_cache_capacity(4, 16)` | なし | 検出 4 / 認識 16 |
+| 推論計画の事前コンパイル | `engine.warmup(width, height)` | なし | 初回の実行時にコンパイル |
 | 読み込み・推論ログ | `log` クレートで出力 | `-v` / `--verbose` | Warn 以上のみ |
 
 向きの分類器は、Hugging Face の `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` と `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx` から取得します。行の向きの分類器は `x1_0` 版もありますが、tract 上では `x0_25` 版のほうが約 3 倍速いため、こちらを推奨します。
