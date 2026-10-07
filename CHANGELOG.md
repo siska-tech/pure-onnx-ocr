@@ -7,17 +7,26 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
+CPU performance work, measured against OpenVINO Runtime on the same PC, ONNX
+files and pre/post-processing (`docs/devlog/perf/`). OCR output is unchanged.
+
 ### Added
 
 - `OcrEngine::run_many_from_images` and `run_many_from_paths` process several
   images in one call with the same results as one call per image. Detection
   and the orientation classifiers run on several images at once and the
-  recognition batches of all images run together: throughput rose 1.45-2.06x
-  on PP-OCRv6 (16 images, 16-thread i7-1360P). `examples/throughput_bench.rs`
-  measures it.
+  recognition batches of all images run together: throughput rose 1.5-2.4x
+  on PP-OCRv6 (16 images, 16-thread i7-1360P), at 2.5-3.7x the peak memory
+  while it runs. `examples/throughput_bench.rs` measures it.
 - `OcrEngine::warmup(width, height)` compiles the detection plan for an
   image size, the recognition plan for text lines of the minimum width and
   the orientation classifiers' plans ahead of the first run.
+- `tools/openvino-bench` (OpenVINO comparison, A/B runs between two builds,
+  multi-image throughput) and `tools/tract-profile` (per-node timings and an
+  output hash for detection and recognition models). Neither is part of the
+  published crate.
 
 ### Changed
 
@@ -160,7 +169,8 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/releases/tag/v0.1.0

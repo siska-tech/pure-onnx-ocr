@@ -2,7 +2,7 @@
 
 Author: Shion Watanabe  
 First version: 2025-11-09  
-Revised: 2026-10-08 (includes unreleased changes after v0.2.1)
+Revised: 2026-10-08 (v0.3.0)
 Repository: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CTC recognition models without relying on C/C++ runtimes. **PP-OCRv5 and PP-OCRv6 (tiny / small / medium) ONNX exports are supported.** The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
@@ -25,7 +25,7 @@ Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CT
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.2.1"
+pure_onnx_ocr = "0.3.0"
 image = "0.25"       # recommended for image I/O
 geo-types = "0.7"    # recommended for working with polygon results
 ```
@@ -297,7 +297,7 @@ Each English document mirrors the Japanese source to help international contribu
   - GitHub Actions CI and a fixture download script.
 - 2026-10-03: **v0.2.1**: fixed recognition region overflow and detection output
   shape validation; added regression tests and expanded source documentation.
-- 2026-10-08: **Performance work (unreleased)**, benchmarked against OpenVINO under identical conditions (`docs/devlog/perf/`); output unchanged:
+- 2026-10-08: **v0.3.0**: performance work, benchmarked against OpenVINO under identical conditions (`docs/devlog/perf/`); output unchanged:
   - Default inference threads capped at 16 instead of 8 (3-18% faster end to end).
   - Each plan shape compiles once (first run 10-23% faster); `OcrEngine::warmup` added.
   - `run_many_from_paths` / `run_many_from_images` for several images (1.5-2.4x throughput).
