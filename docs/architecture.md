@@ -103,7 +103,7 @@ flowchart TD
 | カテゴリ | 選定 | 理由・備考 |
 | :--- | :--- | :--- |
 | ONNX 推論 | `tract-onnx` 0.23 | Pure Rust の推論エンジン。0.20 では PP-OCRv6 medium の認識モデルを実行できない |
-| 並列処理 | `rayon` + `tract-linalg/multithread-mm` | 認識バッチの並列化（既定は最大 8 スレッド）。機能 `multithread` で切り替える |
+| 並列処理 | `rayon` + `tract-linalg/multithread-mm` | 認識バッチの並列化（既定は最大 16 スレッド）。機能 `multithread` で切り替える |
 | N 次元配列 | `ndarray` 0.17 | tract と同じ版 |
 | 画像の入出力 | `image` | デコードと切り抜き |
 | リサンプリング | 自前の `imgproc` | `cv2.resize(INTER_LINEAR)` と同じ結果にするため |

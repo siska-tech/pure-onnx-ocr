@@ -100,7 +100,7 @@ The crate is `pure_onnx_ocr`, and the main types are re-exported at the root.
 | `rec_batch_size` | 1 | Fastest with tract |
 | `rec_use_space_char` | true | Append `" "` to the dictionary |
 | `rec_crop_mode` | `Rotated` | Crop strategy |
-| `inference_threads` | logical CPUs, at most 8 | Always 1 on WebAssembly |
+| `inference_threads` | logical CPUs, at most 16 | Always 1 on WebAssembly |
 | `plan_cache_capacity(det, rec)` | 4, 16 | Compiled plans kept per model |
 
 ### `OcrEngine`

@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/).
 Before 1.0, minor versions may contain breaking changes.
 
+## [Unreleased]
+
+### Changed
+
+- The default number of inference threads is now the number of logical CPUs
+  capped at 16 (was 8). Recognition runs batches in parallel and keeps
+  scaling past 8 threads: end-to-end time dropped by 3-18% on a 16-thread
+  i7-1360P with identical output. Machines with 8 or fewer logical CPUs are
+  unaffected. Peak memory during the first run grows (e.g. PP-OCRv6 medium
+  1.0 GB to 1.6 GB) because more recognition plans compile at once; memory
+  after the first run is unchanged. `inference_threads(8)` restores the old
+  behaviour.
+
 ## [0.2.1] - 2026-10-03
 
 ### Fixed
@@ -129,6 +142,7 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/releases/tag/v0.1.0

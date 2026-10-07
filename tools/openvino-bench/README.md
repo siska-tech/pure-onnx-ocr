@@ -35,7 +35,7 @@ pure-onnx-ocr（tract）と OpenVINO Runtime を、同じ PC・同じ画像・�
 
 | 名前 | 内容 |
 | :--- | :--- |
-| `pure` | pure-onnx-ocr の既定。推論スレッド数は min(論理 CPU 数, 8) = 8。認識はバッチ 1 で、複数のバッチを並列に実行します。 |
+| `pure` | pure-onnx-ocr の既定。推論スレッド数は min(論理 CPU 数, 16)（i7-1360P では 16。benchmark-openvino の計測時は上限 8 だった）。認識はバッチ 1 で、複数のバッチを並列に実行します。 |
 | `ov` | OpenVINO の主な比較対象。検出は `LATENCY`。認識は `THROUGHPUT` で、`OPTIMAL_NUMBER_OF_INFER_REQUESTS` 個の request を使い、バッチ 1 を並列に実行します。pure と同じ構造で、事前のスイープでは最速でした。 |
 | `ov-latency` | OpenVINO の素の使い方。`LATENCY` で request は 1 つ。切り出した画像を 1 枚ずつ順番に推論します。 |
 

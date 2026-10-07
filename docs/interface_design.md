@@ -116,7 +116,7 @@
 | `rec_batch_size` | 1 | tract では 1 が最速 |
 | `rec_use_space_char` | true | 辞書の末尾に `" "` を追加する |
 | `rec_crop_mode` | `Rotated` | 切り出しの方法 |
-| `inference_threads` | 論理 CPU 数（最大 8） | WebAssembly では 1 |
+| `inference_threads` | 論理 CPU 数（最大 16） | WebAssembly では 1 |
 | `plan_cache_capacity(det, rec)` | 4, 16 | 推論計画（入力形状ごと）のキャッシュ数 |
 
 `build()` は、ファイルの存在確認、YAML の解釈、ONNX の読み込み、辞書の構築、スレッドプールの生成を行う。

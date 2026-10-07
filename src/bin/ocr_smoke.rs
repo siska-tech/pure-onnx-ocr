@@ -440,7 +440,7 @@ impl Cli {
             "      --no-space-char           Do not append the space class to the dictionary\n",
         );
         text.push_str(
-            "      --threads N               Inference threads (default: logical CPUs, at most 8)\n",
+            "      --threads N               Inference threads (default: logical CPUs, at most 16)\n",
         );
         text.push_str("      --benchmark               Emit timing diagnostics for benchmarking\n");
         text.push_str(

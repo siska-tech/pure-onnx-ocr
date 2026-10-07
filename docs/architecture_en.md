@@ -80,7 +80,7 @@ flowchart TD
 | Area | Choice | Notes |
 | :--- | :--- | :--- |
 | ONNX inference | `tract-onnx` 0.23 | Pure Rust; 0.20 cannot run PP-OCRv6 medium |
-| Parallelism | `rayon` + `tract-linalg/multithread-mm` | Parallel recognition batches (up to 8 threads by default), feature `multithread` |
+| Parallelism | `rayon` + `tract-linalg/multithread-mm` | Parallel recognition batches (up to 16 threads by default), feature `multithread` |
 | N-d arrays | `ndarray` 0.17 | Same version as tract |
 | Image I/O | `image` | Decoding and cropping |
 | Resampling | in-house `imgproc` | Identical to `cv2.resize(INTER_LINEAR)` |

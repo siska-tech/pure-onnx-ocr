@@ -87,7 +87,7 @@ fn main() -> Result<(), pure_onnx_ocr::OcrError> {
         .det_limit_side_len(960)
         .det_unclip_ratio(1.5)
         .rec_batch_size(1)       // default; one crop per batch is fastest
-        .inference_threads(8)    // default: logical CPUs, at most 8
+        .inference_threads(8)    // default: logical CPUs, at most 16
         .build()?;
 
     let results: Vec<OcrResult> = engine.run_from_path("examples/demo.jpg")?;
@@ -150,14 +150,14 @@ Detection resizes the long side, normalises in BGR order with ImageNet statistic
 | Detection thresholds from `inference.yml` | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | pipeline defaults (0.3 / 0.6 / 1.5) |
 | Page orientation correction (0/90/180/270) | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | off |
 | Text-line flip correction (0/180) | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | off |
-| Inference threads | `inference_threads(8)` | `--threads N` | logical CPUs, at most 8 (1 on WebAssembly) |
+| Inference threads | `inference_threads(8)` | `--threads N` | logical CPUs, at most 16 (1 on WebAssembly) |
 | Compiled plan cache limit | `plan_cache_capacity(4, 16)` | n/a | 4 detection / 16 recognition |
 | Loading and inference logs | emitted through the `log` crate | `-v` / `--verbose` | warnings only |
 
 The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` and `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx`. An `x1_0` text-line classifier also exists, but `x0_25` is about 3x faster on tract and is recommended.
 
 > **Known limitations:**
-> - Inference uses as many threads as logical CPUs (at most 8) by default; `inference_threads(1)` runs single-threaded. Browsers (WebAssembly) always run single-threaded.
+> - Inference uses as many threads as logical CPUs (at most 16) by default; `inference_threads(1)` runs single-threaded. Browsers (WebAssembly) always run single-threaded.
 > - PP-OCRv6 medium takes about 4.5 s per image on CPU (tract, 8 threads). Prefer tiny or small when speed matters. See `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` for a comparison with PP-OCRv5.
 > - Text-line flip correction can miss short all-uppercase lines such as `TAIYUAN`.
 > - Document unwarping (UVDoc) and layout analysis are not supported.

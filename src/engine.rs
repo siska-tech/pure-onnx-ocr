@@ -1038,7 +1038,7 @@ impl OcrEngineBuilder {
     /// single-threaded.
     ///
     /// Defaults to [`default_inference_threads`](crate::default_inference_threads):
-    /// the number of logical CPUs capped at 8. Ignored (always 1) on
+    /// the number of logical CPUs capped at 16. Ignored (always 1) on
     /// WebAssembly or when the `multithread` feature is disabled.
     pub fn inference_threads(mut self, threads: usize) -> Self {
         self.inference_threads = Some(threads.max(1));

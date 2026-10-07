@@ -50,7 +50,7 @@ EXE = HERE / "target" / "release" / ("openvino-bench.exe" if os.name == "nt" els
 
 # name -> extra CLI arguments
 CONFIGS = {
-    # pure-onnx-ocr defaults: min(logical CPUs, 8) threads, rec batch 1,
+    # pure-onnx-ocr defaults: min(logical CPUs, 16) threads, rec batch 1,
     # recognition batches run in parallel.
     "pure": ["--backend", "pure"],
     # OpenVINO, recognition with the THROUGHPUT hint and the plugin's optimal
