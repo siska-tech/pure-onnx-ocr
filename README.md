@@ -278,7 +278,7 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 
 ### ブラウザでのマルチスレッド
 
-cross-origin isolated なページでは、推論を複数のスレッド（Web Worker）で実行できます。認識のバッチと行列積が並列に動き、出力はシングルスレッド版と同じです。PP-OCRv5 mobile では、4 スレッドで v0.3.0（シングルスレッド）の 2.4〜3.0 倍速くなりました（ヘッドレス Chromium、4 vCPU。[task-perf-010](docs/devlog/perf/task-perf-010-wasm-threads.md)）。
+cross-origin isolated なページでは、推論を複数のスレッド（Web Worker）で実行できます。認識のバッチと行列積が並列に動き、出力はシングルスレッド版と同じです。4 スレッドで、2 回目以降の処理がシングルスレッド版の 2.0〜3.3 倍速くなりました（PP-OCRv6 tiny / small / medium と PP-OCRv5 mobile、ヘッドレス Chromium、4 vCPU。[task-perf-010](docs/devlog/perf/task-perf-010-wasm-threads.md)）。
 
 - **ビルド**: 共有メモリを使うため、nightly の Rust と `-Z build-std` が必要です。`bindings/wasm/threads/` で日付を固定した nightly を使います（リポジトリのほかの部分は stable のままです）。`scripts/build_wasm.sh --threads` で `examples/web/pkg-threads` に出力します。詳細は [bindings/wasm/threads/README.md](bindings/wasm/threads/README.md) を参照してください。
 - **必要なヘッダ**: ページ（と Worker のスクリプト）を、次のヘッダ付きで配信します。`crossOriginIsolated` が `true` にならないと、スレッド版は読み込めません。
@@ -300,7 +300,7 @@ const engine = new OcrEngineBuilder()
   .build();
 ```
 
-シングルスレッド版にも同じ名前の `initThreadPool` があり、何もせずに完了します。どちらのビルドかは `threadsSupported()` で分かります。デモ（`examples/web/worker.js`）は、isolated なページではスレッド版を、それ以外ではシングルスレッド版を読み込みます。共有メモリの上限は 2 GiB です。
+シングルスレッド版にも同じ名前の `initThreadPool` があり、何もせずに完了します。どちらのビルドかは `threadsSupported()` で分かります。デモ（`examples/web/worker.js`）は、isolated なページではスレッド版を、それ以外ではシングルスレッド版を読み込みます。共有メモリの上限は 2 GiB で、PP-OCRv6 medium のピーク（約 1.2 GiB）は収まります。
 
 ### よくあるエラー
 

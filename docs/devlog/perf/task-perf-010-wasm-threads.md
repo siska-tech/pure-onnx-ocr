@@ -1,9 +1,9 @@
 ---
-status: in-progress
+status: completed
 priority: low
 assignee: Backend
 start_date: 2026-10-07
-end_date:
+end_date: 2026-10-08
 tags: [performance, wasm, multithread, browser]
 depends_on: perf/task-perf-001-multithread
 ---
@@ -76,15 +76,17 @@ depends_on: perf/task-perf-001-multithread
 ### 条件
 - ヘッドレス Chromium 141（Playwright 1.56）、`serve.mjs --coi`（COOP/COEP 付き）で配信した。
 - 4 vCPU（Intel Xeon 2.10 GHz）、メモリ 15 GB のクラウドのコンテナ。**8 スレッドは論理 CPU 数を超えるので参考値**。
-- 構成ごとに新しいページと Worker を作り、5 回実行した。初回（推論計画のコンパイルを含む）と、2〜5 回目の中央値を記録した。同じ計測を 2 回繰り返し、範囲で示す。
+- 構成ごとに新しいページと Worker を作り、複数回実行した。初回（推論計画のコンパイルを含む）と、2 回目以降の中央値を記録した。
 - メモリは、最後の実行の後の `WebAssembly.Memory` のサイズである。wasm のメモリは縮まないので、これがピークになる（JS のヒープや Worker のスタックは含まない）。
-- モデル: PP-OCRv5 mobile（デモのサイトに置いている単一ファイル版の `det.onnx` / `rec.onnx`、`ppocrv5_dict.txt`）。
-  - **PP-OCRv6 tiny / small / medium は未計測**。この環境のネットワークポリシーで、Hugging Face（と ModelScope、bcebos.com）への接続が拒否され、モデルを取得できなかった。計測の手順は下の「再計測」のとおり。
+- モデル:
+  - 結果 1: PP-OCRv5 mobile（デモのサイトに置いている単一ファイル版の `det.onnx` / `rec.onnx`、`ppocrv5_dict.txt`）。v0.3.0 のリリース版との比較に使った。5 回実行、同じ計測を 2 回繰り返して範囲で示す。
+  - 結果 2: Hugging Face の PP-OCRv6 tiny / small / medium と PP-OCRv5 mobile（`inference.onnx` + `inference.yml`）。4 回実行、1 回ずつ。
+- 既存の表で使っている搭乗券の画像（`general_ocr_002.jpg`）は、取得元（bcebos.com）にこの環境から接続できなかったので使っていない。
 - 画像:
   - `sample.png`: 1000×700、英語 10 行（合成画像。依頼時の条件に合わせた）
   - `ja.jpg`: 1536×839、日本語 50 領域（`scripts/fetch_fixtures.sh --all` の `japan_2.jpg`）
 
-### 結果: PP-OCRv5 mobile
+### 結果 1: PP-OCRv5 mobile（単一ファイル版）と v0.3.0
 
 `sample.png`（1000×700、10 行）
 
@@ -116,24 +118,53 @@ depends_on: perf/task-perf-001-multithread
 - メモリは、1 スレッド増えるごとに約 5〜10 MiB 増える。4 スレッドでシングルスレッド版の 1.1〜1.2 倍（+25〜43 MiB）だった。
 - 8 スレッドは 4 vCPU のマシンでは 4 スレッドと同じか少し遅く、メモリだけが増える。
 
-### 再計測（PP-OCRv6）
-Hugging Face に接続できる環境で、次を実行する。
+### 結果 2: PP-OCRv6 tiny / small / medium と PP-OCRv5 mobile
+
+各セルは「初回 / 2 回目以降（中央値） / wasm メモリ」。
+
+`sample.png`（1000×700、10 行）
+
+| モデル | シングルスレッド版 | スレッド版 1 | 2 | 4 | 8（参考） |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| v6 tiny | 3.06 / 1.95 s / 160 MiB | 3.47 / 1.83 s / 162 MiB | 2.46 / 1.33 s / 154 MiB | 2.20 / **0.95 s** / 178 MiB | 2.40 / 1.04 s / 224 MiB |
+| v6 small | 8.83 / 7.14 s / 352 MiB | 9.11 / 6.99 s / 324 MiB | 6.24 / 4.44 s / 359 MiB | 5.24 / **2.92 s** / 341 MiB | 4.99 / 2.55 s / 402 MiB |
+| v6 medium | 36.99 / 32.71 s / 1,095 MiB | 34.97 / 31.82 s / 1,096 MiB | 25.97 / 22.79 s / 1,061 MiB | 16.20 / **13.33 s** / 1,070 MiB | 15.77 / 12.07 s / 1,206 MiB |
+| v5 mobile | 7.79 / 6.01 s / 198 MiB | 7.43 / 5.73 s / 192 MiB | 5.41 / 3.45 s / 219 MiB | 3.89 / **1.97 s** / 231 MiB | 3.68 / 2.12 s / 290 MiB |
+
+`ja.jpg`（1536×839、v6 は 55 領域、v5 は 50 領域）
+
+| モデル | シングルスレッド版 | スレッド版 1 | 2 | 4 | 8（参考） |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| v6 tiny | 2.73 / 2.07 s / 128 MiB | 2.95 / 1.92 s / 130 MiB | 2.20 / 1.39 s / 133 MiB | 1.83 / **0.87 s** / 154 MiB | 1.88 / 0.92 s / 173 MiB |
+| v6 small | 10.50 / 8.67 s / 277 MiB | 9.48 / 8.11 s / 279 MiB | 6.41 / 5.08 s / 289 MiB | 4.40 / **2.86 s** / 302 MiB | 4.27 / 2.89 s / 345 MiB |
+| v6 medium | 43.29 / 40.66 s / 613 MiB | 43.92 / 41.34 s / 676 MiB | 28.04 / 25.69 s / 685 MiB | 16.57 / **14.18 s** / 847 MiB | 15.16 / 12.67 s / 833 MiB |
+| v5 mobile | 10.75 / 8.63 s / 273 MiB | 9.88 / 8.12 s / 272 MiB | 6.45 / 4.68 s / 284 MiB | 4.70 / **2.61 s** / 291 MiB | 4.38 / 2.60 s / 318 MiB |
+
+- **4 スレッドで、2 回目以降がシングルスレッド版の 2.0〜3.3 倍速くなった**（tiny 2.0〜2.4 倍、small 2.4〜3.0 倍、medium 2.5〜2.9 倍、v5 mobile 3.0〜3.3 倍）。初回は 1.4〜2.6 倍。
+- tiny は検出の割合が大きく（4 スレッドで全体の約半分）、検出が認識ほど縮まないので、倍率が最も小さい。
+- **出力は全構成でネイティブ版と一致した**（4 モデル × 2 画像 × 5 構成）。
+- **medium のメモリのピークは最大 1,206 MiB（8 スレッド）で、共有メモリの上限 2 GiB に収まった**。4 スレッドでは 847〜1,070 MiB で、シングルスレッド版と比べて −2〜+38% だった。medium のメモリは、スレッド数よりも、どの幅の推論計画を何個キャッシュするかで変わる（sample の 1 スレッドで 1,095 MiB、ja で 613 MiB）。
+- v5 mobile は、結果 1 の単一ファイル版より少し遅い（sample のシングルスレッド版で 6.0 s 対 5.2 s）。`inference.yml` の検出の設定（入力サイズの上限など）が違うためで、スレッドの効果は同じ傾向だった。
+
+### 再計測の手順
 
 ```bash
 scripts/fetch_fixtures.sh --all
 mkdir -p examples/web/models && cp -r tests/fixtures/models/ppocrv6 tests/fixtures/models/ppocrv5 examples/web/models/
-cp tests/fixtures/images/general_ocr_002.jpg examples/web/models/sample.jpg
+cp tests/fixtures/images/ja.jpg examples/web/models/ja.jpg
 scripts/build_wasm.sh && scripts/build_wasm.sh --threads
 mkdir -p native
 for m in v6-tiny v6-small v6-medium v5-mobile; do
   dir=$(case $m in v6-*) echo ppocrv6/${m#v6-};; v5-mobile) echo ppocrv5/mobile;; esac)
   cargo run -q --release --example ocr_json -- --det tests/fixtures/models/${dir}_det \
-    --rec tests/fixtures/models/${dir}_rec examples/web/models/sample.jpg > native/$m.json
+    --rec tests/fixtures/models/${dir}_rec examples/web/models/ja.jpg > native/$m.json
 done
-node examples/web/bench.mjs --image models/sample.jpg --native-dir "$PWD/native" --threads 1,2,4,8
+node examples/web/bench.mjs --image models/ja.jpg --native-dir "$PWD/native" --threads 1,2,4,8
 ```
 
 ## 結果（要点）
-- ブラウザで cross-origin isolated なページなら、推論が複数スレッドで動くようになった。PP-OCRv5 mobile で、v0.3.0 のシングルスレッド版より **2.4〜3.0 倍速い**（4 スレッド、2 回目以降）。出力はネイティブ版と一致する。
+- ブラウザで cross-origin isolated なページなら、推論が複数スレッドで動くようになった。4 スレッドで、2 回目以降がシングルスレッド版の **2.0〜3.3 倍**速い（PP-OCRv6 tiny / small / medium、PP-OCRv5 mobile）。v0.3.0 のリリース版と比べても 2.4〜3.0 倍（PP-OCRv5 mobile）。
+- 出力は、全構成でネイティブ版と一致した。
+- PP-OCRv6 medium のメモリのピークは最大 1,206 MiB で、共有メモリの上限（2 GiB）に収まった。
 - isolated でないページ、または `pkg-threads` を読み込めない場合は、シングルスレッド版で動く（デモで確認済み）。
-- 残り: PP-OCRv6 tiny / small / medium の計測（特に medium のメモリが 2 GiB に収まるか）と、実機のモバイル端末での確認。
+- 残り: 実機のモバイル端末（特に iOS Safari）で、2 GiB の共有メモリを確保できるか、入れ子の Worker が動くかの確認。

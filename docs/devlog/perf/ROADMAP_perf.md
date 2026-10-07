@@ -33,7 +33,7 @@ CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）
 | `[x]` | [`task-perf-007`](task-perf-007-warmup.md) | 推論計画を事前にコンパイルする API（`OcrEngine::warmup`）と、同じ計画の重複コンパイルの排除 | 重複コンパイルをなくし、初回 −10〜23%、ピークメモリは上限 8 の水準に戻った。warmup で初回がさらに −16〜33% |
 | `[x]` | [`task-perf-008`](task-perf-008-run-many.md) | 複数の画像をまとめて処理する API（`run_many_from_images` / `run_many_from_paths`） | スループット 1.45〜2.06 倍、結果は 1 枚ずつと一致。tiny は OpenVINO（1 枚ずつ）を上回る |
 | `[x]` | [`task-perf-009`](task-perf-009-rec-profile.md) | 認識モデルの演算子ごとのプロファイル | 認識の 66〜80% は行列演算。OpenVINO との残りの差は、認識の 1 スレッドの効率（1.1〜1.34 倍）でほぼ説明できる。本クレート側の対策は見送り |
-| `[~]` | [`task-perf-010`](task-perf-010-wasm-threads.md) | ブラウザ（WebAssembly）のマルチスレッド化（wasm-bindgen-rayon、tract の `RayonGlobal`） | v5 mobile で v0.3.0 の 2.4〜3.0 倍（4 スレッド）、出力はネイティブと一致。PP-OCRv6 の計測が残り（モデルを取得できなかった） |
+| `[x]` | [`task-perf-010`](task-perf-010-wasm-threads.md) | ブラウザ（WebAssembly）のマルチスレッド化（wasm-bindgen-rayon、tract の `RayonGlobal`） | 4 スレッドでシングルスレッド版の 2.0〜3.3 倍（v6 tiny / small / medium、v5 mobile）、出力はネイティブと一致。medium のピークは 1.2 GiB で上限 2 GiB に収まる |
 
 進める順番:
 
@@ -58,6 +58,6 @@ task-perf-006 の実測（修正版の tract）では、small（搭乗券）は 
 | 中 | `run_many` の同時に処理する画像の数を指定できるようにする | 今は推論スレッド数（16）と同じで、medium ではメモリのピークが 1 枚ずつの 3 倍（3.2 GB）になる（[benchmark-openvino-throughput](benchmark-openvino-throughput.md)） |
 | 低 | tract の行列演算: 小さい `k` と `M` の効率（CTC の全結合層）とパックの削減（upstream） | task-perf-009。tiny と small の残り 2 割程度の差の主因 |
 | 低 | 行の向きの分類器も、バッチ単位で並列化する | 認識と同じ方法で並列化できる |
-| 中 | ブラウザのマルチスレッド版で PP-OCRv6 tiny / small / medium を計測し、medium のメモリが共有メモリの上限（2 GiB）に収まるか確かめる | task-perf-010 では Hugging Face に接続できず、PP-OCRv5 mobile だけを計測した |
+| 中 | ブラウザのマルチスレッド版を、実機のモバイル端末（特に iOS Safari）で確かめる | task-perf-010 はヘッドレス Chromium だけで計測した。2 GiB の共有メモリの確保と入れ子の Worker を確認する |
 | 低 | `ocr_smoke --benchmark` でも Windows の電力スロットリングを外す | ベンチマーク用の example では対応済み |
 | 効果なし | `-C target-cpu=native` でビルドする | 実測で変化なし。tract の行列演算カーネルは、実行時に命令セットを選んでいる |

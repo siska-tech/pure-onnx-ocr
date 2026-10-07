@@ -16,6 +16,10 @@ Before 1.0, minor versions may contain breaking changes.
   in parallel and tract's matrix multiplications on rayon's global pool
   (`Executor::RayonGlobal`). It needs a cross-origin isolated page
   (COOP/COEP headers). Output is identical to the single-threaded build.
+  With 4 threads, runs after the first were 2.0-3.3x faster than the
+  single-threaded build on PP-OCRv6 tiny / small / medium and PP-OCRv5
+  mobile (headless Chromium, 4 vCPUs), and PP-OCRv6 medium peaked at
+  1.2 GiB of WebAssembly memory.
   `scripts/build_wasm.sh [--threads]` builds either variant, and CI builds
   both.
 - WebAssembly bindings: `initThreadPool(n)` (from wasm-bindgen-rayon; a

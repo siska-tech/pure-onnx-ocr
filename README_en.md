@@ -240,7 +240,7 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 
 ### Multi-threading in browsers
 
-Cross-origin isolated pages can run inference on several threads (Web Workers): recognition batches and matrix multiplications run in parallel, with the same output as the single-threaded build. With PP-OCRv5 mobile and 4 threads, it was 2.4-3.0x faster than v0.3.0 (single-threaded) in headless Chromium on 4 vCPUs ([task-perf-010](docs/devlog/perf/task-perf-010-wasm-threads.md)).
+Cross-origin isolated pages can run inference on several threads (Web Workers): recognition batches and matrix multiplications run in parallel, with the same output as the single-threaded build. With 4 threads, runs after the first were 2.0-3.3x faster than the single-threaded build (PP-OCRv6 tiny / small / medium and PP-OCRv5 mobile, headless Chromium on 4 vCPUs ([task-perf-010](docs/devlog/perf/task-perf-010-wasm-threads.md)).
 
 - **Build**: shared memory needs nightly Rust and `-Z build-std`. `bindings/wasm/threads/` pins a nightly for this build only; the rest of the repository stays on stable. `scripts/build_wasm.sh --threads` writes `examples/web/pkg-threads`. See [bindings/wasm/threads/README.md](bindings/wasm/threads/README.md).
 - **Headers**: serve the page (and the Worker scripts) with the headers below. The threaded build cannot load unless `crossOriginIsolated` is `true`.
@@ -262,7 +262,7 @@ const engine = new OcrEngineBuilder()
   .build();
 ```
 
-The single-threaded build exports an `initThreadPool` that resolves without doing anything; `threadsSupported()` tells the builds apart. The demo (`examples/web/worker.js`) loads the threaded build on isolated pages and the single-threaded one elsewhere. Shared memory is capped at 2 GiB.
+The single-threaded build exports an `initThreadPool` that resolves without doing anything; `threadsSupported()` tells the builds apart. The demo (`examples/web/worker.js`) loads the threaded build on isolated pages and the single-threaded one elsewhere. Shared memory is capped at 2 GiB, which leaves room for PP-OCRv6 medium (about 1.2 GiB at peak).
 
 ### Troubleshooting
 

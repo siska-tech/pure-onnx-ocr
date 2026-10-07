@@ -126,28 +126,27 @@ Workers started from it (Chrome, Firefox, Safari 16.4+).
 The recognised text matches the native build. The first run of each input
 shape also includes compiling the inference plan.
 
-## Multi-threaded build (headless Chromium 141, 4 vCPU, PP-OCRv5 mobile)
+## Multi-threaded build (headless Chromium 141, 4 vCPU)
 
-Measured with `bench.mjs` (`serve.mjs --coi`): first run (includes compiling
-the inference plans) and median of the next four runs; memory is the size of
-the WebAssembly memory after the runs, which is its peak. 8 threads exceed
-the 4 vCPUs of the machine. Ranges are two repetitions; details in
+Measured with `bench.mjs` (`serve.mjs --coi`) on a 1536x839 Japanese image
+(`ja.jpg`, 50-55 regions). Each cell is the first run (includes compiling
+the inference plans) / the median of the later runs / the WebAssembly memory
+size after the runs, which is its peak. 8 threads exceed the 4 vCPUs of the
+machine. More images and the comparison with v0.3.0 are in
 [task-perf-010](../../docs/devlog/perf/task-perf-010-wasm-threads.md).
 
-| Build | Threads | 1000x700, 10 lines: first / later | Memory | 1536x839 Japanese, 50 regions: first / later | Memory |
+| Model | single (`pkg`) | threads: 1 | 2 | 4 | 8 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| v0.3.0 | 1 | 8.16 s / 5.27 s | 189 MiB | 9.74 s / 7.83 s | 269 MiB |
-| single (`pkg`) | 1 | 6.6-6.7 s / 5.2 s | 189 MiB | 9.6-10.9 s / 8.2-8.6 s | 269 MiB |
-| threads (`pkg-threads`) | 1 | 6.1-6.2 s / 4.7-5.4 s | 200 MiB | 9.5-10.8 s / 7.7-8.0 s | 275 MiB |
-| threads | 2 | 4.7-4.8 s / 2.9-3.2 s | 211 MiB | 6.4-6.6 s / 4.1-4.5 s | 285 MiB |
-| threads | 4 | 3.3-3.4 s / 1.8-2.0 s | 229 MiB | 3.9-4.2 s / 2.4-2.7 s | 295 MiB |
-| threads | 8 | 3.3-3.4 s / 1.8-2.0 s | 251 MiB | 4.3 s / 2.6 s | 313 MiB |
+| PP-OCRv6 tiny | 2.7 / 2.1 s / 128 MiB | 3.0 / 1.9 s / 130 MiB | 2.2 / 1.4 s / 133 MiB | 1.8 / 0.9 s / 154 MiB | 1.9 / 0.9 s / 173 MiB |
+| PP-OCRv6 small | 10.5 / 8.7 s / 277 MiB | 9.5 / 8.1 s / 279 MiB | 6.4 / 5.1 s / 289 MiB | 4.4 / 2.9 s / 302 MiB | 4.3 / 2.9 s / 345 MiB |
+| PP-OCRv6 medium | 43.3 / 40.7 s / 613 MiB | 43.9 / 41.3 s / 676 MiB | 28.0 / 25.7 s / 685 MiB | 16.6 / 14.2 s / 847 MiB | 15.2 / 12.7 s / 833 MiB |
+| PP-OCRv5 mobile | 10.8 / 8.6 s / 273 MiB | 9.9 / 8.1 s / 272 MiB | 6.5 / 4.7 s / 284 MiB | 4.7 / 2.6 s / 291 MiB | 4.4 / 2.6 s / 318 MiB |
 
 Every configuration returned the same text and boxes as the native build
-(`examples/ocr_json.rs`). PP-OCRv6 has not been measured with the threaded
-build yet.
+(`examples/ocr_json.rs`). PP-OCRv6 medium peaked at 1.2 GiB (1000x700
+image, 8 threads), within the 2 GiB shared-memory maximum.
 
 ```bash
 node examples/web/bench.mjs --models v6-tiny,v6-small,v6-medium,v5-mobile \
-  --threads 1,2,4,8 --image models/sample.jpg [--native-dir DIR]
+  --threads 1,2,4,8 --image models/ja.jpg [--native-dir DIR]
 ```
