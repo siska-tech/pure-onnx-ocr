@@ -46,6 +46,20 @@ depends_on: perf/task-perf-003-default-threads
 - tiny は、1 枚ずつ処理する OpenVINO を上回った。small と medium は、OpenVINO の 0.88〜0.91 倍である。
 - OpenVINO の値は [benchmark-openvino](benchmark-openvino.md) のもの（1 枚ずつ、別の時間帯）。OpenVINO も複数画像を並列に処理すれば速くなるので、公平な比較ではない。
 
+### 修正版の tract（task-perf-006）との組み合わせ
+
+task-perf-006 の worktree（tract main + 3 つの修正）で、同じ計測をした。
+
+| Model | 1 枚ずつ | `run_many_from_images` | 倍率 | OpenVINO `ov`（1 枚ずつ）に対して |
+| :--- | ---: | ---: | ---: | ---: |
+| v6 tiny | 3.37 枚/秒 | 6.41 枚/秒 | 1.90 | 1.44 倍 |
+| v6 small | 1.21 枚/秒 | 1.73 枚/秒 | 1.43 | 1.19 倍 |
+| v6 medium | 0.29 枚/秒 | 0.36 枚/秒 | 1.24 | 1.06 倍 |
+
+- 修正版の tract では検出自体が並列化されるので、`run_many` の上乗せは小さくなる（1.24〜1.90 倍）。
+- それでも、**3 モデルとも、1 枚ずつ処理する OpenVINO のスループットを上回った**。tract 0.23.8 で 1 枚ずつ処理した場合と比べると、2.6 倍（tiny）、2.1 倍（small）、1.7 倍（medium）である。
+- 結果は、すべてのラウンドで 1 枚ずつの場合と一致した。
+
 ## 設計
 
 1 枚分の処理を 2 段階に分けた（`src/engine.rs`）。
