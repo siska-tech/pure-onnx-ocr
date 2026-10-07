@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-03（v0.2.1）
+改訂: 2026-10-08（v0.2.1 以降の未リリースの変更を含む）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -53,11 +53,13 @@ for kind in det rec; do
 done
 ```
 
-| 階層 | 特徴 | CPU 推論時間の目安 (896x528 の画像 1 枚、Core i7-1360P・8 スレッド) |
+| 階層 | 特徴 | CPU 推論時間の目安 (896x528 の画像 1 枚、Core i7-1360P・16 スレッド、2 回目以降) |
 | :--- | :--- | :--- |
-| `tiny` | 最軽量。辞書は 6,904 文字で、**ひらがな・カタカナを含まないため日本語には不向き** | 約 0.5 秒 |
-| `small` | 50 言語 (日本語を含む)。精度と速度のバランスが良い | 約 1.3 秒 |
-| `medium` | 50 言語。最高精度 (PaddleOCR 3.x の既定) | 約 4.5 秒 |
+| `tiny` | 最軽量。辞書は 6,904 文字で、**ひらがな・カタカナを含まないため日本語には不向き** | 約 0.4 秒 |
+| `small` | 50 言語 (日本語を含む)。精度と速度のバランスが良い | 約 1.1 秒 |
+| `medium` | 50 言語。最高精度 (PaddleOCR 3.x の既定) | 約 4.1 秒 |
+
+複数の画像をまとめて処理する場合や、OpenVINO との比較は [性能](#性能) を参照してください。
 
 #### PP-OCRv5
 
@@ -114,6 +116,42 @@ fn main() -> Result<(), OcrError> {
 }
 ```
 
+## 性能
+
+Core i7-1360P（16 スレッド）、PP-OCRv6、tract 0.23.8 での実測値です。同じ PC・同じ ONNX・同じ前処理と後処理で、OpenVINO Runtime（2026.4.1）とも比べています。どの設定でも、出力は OpenVINO と完全に一致しました。
+
+| 使い方 | tiny | small | medium |
+| :--- | ---: | ---: | ---: |
+| 1 枚ずつ（896x528 の画像、2 回目以降） | 約 0.4 秒 | 約 1.1 秒 | 約 4.1 秒 |
+| 複数画像（`run_many_from_images`、16 枚） | 5.3 枚/秒 | 1.5 枚/秒 | 0.34 枚/秒 |
+| 同上、OpenVINO（最速の設定）に対する比 | 64% | 67% | 81% |
+
+- 複数画像を処理するときのメモリのピークは、OpenVINO の 23〜65% です。
+- tract の次のリリースに入る予定の改善（[sonos/tract#2976](https://github.com/sonos/tract/pull/2976) など、提案中の修正を含む）を使うと、複数画像では OpenVINO の 79〜99% になります（medium は同等）。
+- 詳しくは [benchmark-openvino.md](docs/devlog/perf/benchmark-openvino.md)（1 枚ずつ）と [benchmark-openvino-throughput.md](docs/devlog/perf/benchmark-openvino-throughput.md)（複数画像）を参照してください。計測ツールは `tools/openvino-bench` です。
+
+速度を引き出すには:
+
+- **複数の画像は `run_many_from_paths` / `run_many_from_images` でまとめて処理します。** 1 枚ずつ `run_*` を呼ぶより 1.5〜2.4 倍速く、結果は同じです。ただし処理中のメモリは 1 枚ずつのときの 2.5〜3.7 倍になります。
+- **サーバーなどでは、起動時に `warmup(width, height)` を呼びます。** 推論計画は入力の形ごとに初回の使用時にコンパイルされるため、最初の 1 枚が遅くなります。`warmup` しておくと、その画像サイズの初回の処理が 16〜33% 速くなります。
+- `OcrEngine` は使い回します。モデルの読み込みと推論計画のキャッシュは、エンジンごとに持ちます。
+
+```rust
+let engine = OcrEngineBuilder::new()
+    .det_model_dir("models/ppocrv6/small_det")
+    .rec_model_dir("models/ppocrv6/small_rec")
+    .build()?;
+engine.warmup(1280, 720)?; // よく使う画像サイズの推論計画を先にコンパイルする
+
+let paths = ["a.jpg", "b.jpg", "c.jpg"];
+for (path, results) in paths.iter().zip(engine.run_many_from_paths(&paths)) {
+    match results {
+        Ok(results) => println!("{path}: {} regions", results.len()),
+        Err(error) => eprintln!("{path}: {error}"), // 1 枚の失敗はほかの画像に影響しない
+    }
+}
+```
+
 ## 動作確認バイナリ `ocr_smoke`
 
 `test_ocr.py` に相当する動作確認を Rust のみで実施したい場合は、付属の `ocr_smoke` バイナリを利用できます。
@@ -156,17 +194,17 @@ cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg
   --det-model-dir tests/fixtures/models/ppocrv6/small_det 
   --rec-model-dir tests/fixtures/models/ppocrv6/small_rec --benchmark
 
-# PP-OCRv6 small、Core i7-1360P・8 スレッド。1 回目の実行なので推論計画のコンパイル時間を含む
+# PP-OCRv6 small、Core i7-1360P・16 スレッド。1 回目の実行なので推論計画のコンパイル時間を含む
 [INFO] benchmark.image=tests/fixtures/images/general_ocr_002.jpg
-[INFO] benchmark.total_seconds=2.064020
-[INFO] benchmark.image_decode_seconds=0.004564
+[INFO] benchmark.total_seconds=1.690279
+[INFO] benchmark.image_decode_seconds=0.002788
 [INFO] benchmark.orientation_seconds=0.000000
-[INFO] benchmark.det.preprocess_seconds=0.018218
-[INFO] benchmark.det.inference_seconds=0.952411
-[INFO] benchmark.det.postprocess_seconds=0.004526
-[INFO] benchmark.rec.preprocess_seconds=0.010476
-[INFO] benchmark.rec.inference_seconds=1.038929
-[INFO] benchmark.rec.postprocess_seconds=0.028048
+[INFO] benchmark.det.preprocess_seconds=0.009539
+[INFO] benchmark.det.inference_seconds=0.723443
+[INFO] benchmark.det.postprocess_seconds=0.003544
+[INFO] benchmark.rec.preprocess_seconds=0.008060
+[INFO] benchmark.rec.inference_seconds=0.909461
+[INFO] benchmark.rec.postprocess_seconds=0.027912
 ```
 
 推論時間、検出されたテキストと信頼度、ポリゴン座標が標準出力に整形されます。入力画像やモデルが見つからない場合はエラーメッセージと共に終了します。
@@ -198,7 +236,7 @@ cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg
 
 > **既知の制約:**
 > - 推論は既定で論理 CPU 数（最大 16）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）では常にシングルスレッドです。
-> - PP-OCRv6 medium は CPU (tract・8 スレッド) で 1 枚あたり約 4.5 秒かかります。速度を優先する場合は tiny / small を推奨します。PP-OCRv5 との比較は `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` を参照してください。
+> - PP-OCRv6 medium は CPU (tract・16 スレッド) で 1 枚あたり約 4.1 秒かかります。速度を優先する場合は tiny / small を推奨します。PP-OCRv5 との比較は `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` を参照してください。
 > - 行の上下補正は、短い大文字だけの行（`TAIYUAN` など）で判定を誤ることがあります。
 > - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。
 >
@@ -251,7 +289,7 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 | シンボル           | 概要                                                                                           |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `OcrEngineBuilder` | モデル・辞書・パラメータを設定し、`OcrEngine` を構築するためのビルダー。`det_model_dir` / `rec_model_dir` で PaddleOCR のモデルディレクトリを指定できます。 |
-| `OcrEngine`        | 検出・認識パイプラインを統合したファサード。`run_from_path` と `run_from_image` を提供します。 |
+| `OcrEngine`        | 検出・認識パイプラインを統合したファサード。`run_from_path` / `run_from_image` / `run_from_bytes`、複数画像の `run_many_from_paths` / `run_many_from_images`、推論計画の事前コンパイル `warmup` を提供します。 |
 | `OcrRunWithMetrics`| OCR 実行結果とステージ別メトリクス (`OcrTimings`) をまとめて返すヘルパー構造体。               |
 | `OcrTimings`       | 全体・画像デコード・方向分類・検出と認識の各ステージの所要時間。                 |
 | `StageTimings`     | 個別ステージ（前処理・推論・後処理）の所要時間を表すユーティリティ。                            |
@@ -308,6 +346,11 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
   - CI（GitHub Actions）と、テスト用モデルの取得スクリプトを整備した。
 
 - 2026-10-03: **v0.2.1**。認識領域の整数オーバーフローと検出出力の形状検証を修正し、回帰テストとソースコメントを整備した。
+- 2026-10-08: **性能改善（未リリース）**。OpenVINO と同じ条件で比べ、CPU 推論を速くした（`docs/devlog/perf/`）。出力は変わらない。
+  - 既定の推論スレッド数を最大 16 にした（合計 −3〜18%）。
+  - 同じ形の推論計画の重複コンパイルをなくし（初回 −10〜23%）、`OcrEngine::warmup` を追加した。
+  - 複数画像をまとめて処理する `run_many_from_paths` / `run_many_from_images` を追加した（スループット 1.5〜2.4 倍）。
+  - tract の depthwise 畳み込みとパックを改善する PR を提案した（sonos/tract#2976〜#2978）。
 
 ## コントリビューション
 
