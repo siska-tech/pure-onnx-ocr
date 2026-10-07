@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-08（v0.3.0）
+改訂: 2026-10-08（v0.3.1）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -32,7 +32,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.3.0"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.3.1"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
@@ -377,6 +377,9 @@ const engine = new OcrEngineBuilder()
   - 同じ形の推論計画の重複コンパイルをなくし（初回 −10〜23%）、`OcrEngine::warmup` を追加した。
   - 複数画像をまとめて処理する `run_many_from_paths` / `run_many_from_images` を追加した（スループット 1.5〜2.4 倍）。
   - tract の depthwise 畳み込みとパックを改善する PR を提案した（sonos/tract#2976〜#2978）。
+- 2026-10-08: **v0.3.1**。ブラウザ（WebAssembly）のマルチスレッド版を追加した（`docs/devlog/perf/task-perf-010-wasm-threads.md`）。ネイティブ版の動作は変わらない。
+  - cross-origin isolated なページでは、推論を複数の Web Worker で実行する（4 スレッドでシングルスレッド版の 2.0〜3.3 倍）。出力はネイティブ版と一致する。
+  - `initThreadPool`、`threadsSupported()`、`inferenceThreads` をバインディングに追加し、デモはスレッド版とシングルスレッド版を自動で切り替える。
 
 ## コントリビューション
 

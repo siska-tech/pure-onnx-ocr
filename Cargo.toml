@@ -1,6 +1,6 @@
 [package]
 name = "pure-onnx-ocr"
-version = "0.3.0"
+version = "0.3.1"
 rust-version = "1.91"
 edition = "2021"
 description = "Pure Rust OCR pipeline that runs PaddleOCR (PP-OCRv5 / PP-OCRv6) DBNet + CTC ONNX models without C/C++ dependencies."

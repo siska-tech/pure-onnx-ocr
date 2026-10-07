@@ -7,6 +7,8 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-08
+
 ### Added
 
 - Multi-threaded browser build. `pure-onnx-ocr-wasm` gets a `threads`
@@ -202,7 +204,8 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0
