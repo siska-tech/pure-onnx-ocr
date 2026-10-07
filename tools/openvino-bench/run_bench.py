@@ -24,6 +24,14 @@ A/B mode (comparing two builds or two settings of pure-onnx-ocr):
                           adds a config with the given CLI arguments, e.g.
                           --add-config t16="--backend pure --threads 16".
 
+Throughput mode (`--throughput R`): the images repeated R times form a pass,
+timed `--runs` times per process after a warm-up pass. The configs become
+`pure-seq` / `pure-many` (one image at a time / `run_many_from_images`) and
+`ov-seq` / `ov-many` (the OpenVINO pipeline one image at a time / several
+images at once: detection with the THROUGHPUT hint and its optimal number of
+requests shared by parallel images, recognition batches of all images on the
+recognition requests). The reference is `pure-seq`.
+
 When either is given, the default `--configs` becomes the reference (`base`
 if given, otherwise `pure`), `pure` and the added configs, without OpenVINO,
 and the summary gains an "A/B" table (each config relative to the
@@ -60,6 +68,19 @@ CONFIGS = {
     "ov": ["--backend", "ov", "--ov-rec-hint", "THROUGHPUT", "--ov-rec-requests", "0"],
     # OpenVINO out of the box: LATENCY hint, one request, crops one by one.
     "ov-latency": ["--backend", "ov", "--ov-rec-hint", "LATENCY", "--ov-rec-requests", "1"],
+}
+
+OV_REC = ["--ov-rec-hint", "THROUGHPUT", "--ov-rec-requests", "0"]
+
+# Multi-image throughput configs (`--throughput R`).
+THROUGHPUT_CONFIGS = {
+    "pure-seq": ["--backend", "pure"],
+    "pure-many": ["--backend", "pure", "--many"],
+    # Same settings as `ov`, one image at a time.
+    "ov-seq": ["--backend", "ov", *OV_REC],
+    # Several images at once: detection requests shared by parallel images.
+    "ov-many": ["--backend", "ov", "--many", "--ov-det-hint", "THROUGHPUT",
+                "--ov-det-requests", "0", *OV_REC],
 }
 
 # name -> executable, for configs that do not use this tree's build (A/B).
@@ -156,11 +177,34 @@ def environment(args, configs: list[str]) -> dict:
         "warm_runs_per_process": args.runs,
         "configs": {c: CONFIGS[c] for c in configs},
         "reference": args.reference,
+        "throughput": args.throughput,
     }
+
+
+def aggregate_throughput(reports: list[dict]) -> dict:
+    """reports: all rounds of one (config, model) in throughput mode."""
+    tp = [r["throughput"] for r in reports]
+    out = {
+        "images_per_pass": tp[0]["images_per_pass"],
+        "images_per_s": med([t["images_per_s"] for t in tp]),
+        "images_per_s_min": min(t["images_per_s"] for t in tp),
+        "images_per_s_max": max(t["images_per_s"] for t in tp),
+        "avg_cores_busy": med([t["avg_cores_busy"] for t in tp]),
+        "warmup_pass_s": med([t["warmup_pass_s"] for t in tp]),
+        "load_ms": med([r["load_ms"] for r in reports]),
+        "threads": med([r["after_pipeline"]["threads"] for r in reports]),
+        "settings": {k: reports[0].get(k) for k in ("pure", "openvino") if k in reports[0]},
+    }
+    for key in ("peak_working_set_mb", "peak_private_mb", "private_mb"):
+        out[key] = med([r["after_pipeline"]["memory"][key] for r in reports])
+        out[key + "_max"] = max(r["after_pipeline"]["memory"][key] for r in reports)
+    return out
 
 
 def aggregate(reports: list[dict]) -> dict:
     """reports: all rounds of one (config, model)."""
+    if "throughput" in reports[0]:
+        return aggregate_throughput(reports)
     images = list(reports[0]["images"].keys())
     out = {"images": {}}
     for image in images:
@@ -215,8 +259,70 @@ def fmt_s(ms):
     return f"{ms / 1000:.2f} s"
 
 
+def markdown_throughput(summary: dict) -> str:
+    agg, env = summary["aggregate"], summary["environment"]
+    models = summary["models"]
+    configs = env["configs"]
+    L = []
+    L.append("# pure-onnx-ocr vs OpenVINO: multi-image throughput (measured)\n")
+    L.append(f"- {env['date']} / {env['cpu']} / {env['platform']}")
+    L.append(f"- OpenVINO {env['openvino_python']} / {env['rustc']} / pure-onnx-ocr {env['crate_commit']}")
+    for c, exe in env["exes"].items():
+        if Path(exe) != EXE:
+            L.append(f"- `{c}` runs `{exe}`")
+    first = next(iter(agg.values()))
+    L.append(f"- images {', '.join(env['images'])} repeated: {first['images_per_pass']} images per pass; "
+             f"{env['warm_runs_per_process']} timed passes per process after one warm-up pass; "
+             f"{env['rounds']} rounds (medians over rounds)\n")
+    L.append("## Throughput (images/s, median over rounds)\n")
+    L.append("| Model | Config | img/s | min-max | vs pure-seq | vs best OV | avg cores busy | threads | peak WS MB | peak private MB | private after MB |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    best_ov = {}
+    for m in models:
+        base = agg.get(f"pure-seq/{m}")
+        ov = [c for c in configs if uses_openvino(c) and f"{c}/{m}" in agg]
+        best = max(ov, key=lambda c: agg[f"{c}/{m}"]["images_per_s"], default=None)
+        best_ov[m] = best
+        ovm = agg.get(f"{best}/{m}") if best else None
+        for c in configs:
+            a = agg.get(f"{c}/{m}")
+            if not a:
+                continue
+            rel = lambda b: f"{a['images_per_s'] / b['images_per_s']:.2f}" if b else "-"
+            L.append(
+                f"| {m} | {c} | {a['images_per_s']:.2f} | {a['images_per_s_min']:.2f}-{a['images_per_s_max']:.2f} | "
+                f"{rel(base)} | {rel(ovm)} | {a['avg_cores_busy']:.1f} | {a['threads']:.0f} | "
+                f"{a['peak_working_set_mb']:.0f} | {a['peak_private_mb']:.0f} | {a['private_mb']:.0f} |"
+            )
+    L.append("")
+    L.append("Best OV per model (fastest OpenVINO config measured): "
+             + ", ".join(f"{m}: `{c}`" for m, c in best_ov.items()) + "\n")
+    L.append(f"## Output parity (relative to `{env['reference']}`)\n")
+    L.append("| Model | Image | Config | regions (ref / config) | identical text | identical box |")
+    L.append("|---|---|---|---:|---:|---:|")
+    for c, per_model in summary["parity"].items():
+        for m, per in per_model.items():
+            for img, d in per.items():
+                L.append(f"| {m} | {img} | {c} | {d['regions'][0]} / {d['regions'][1]} | "
+                         f"{d['same_text']} | {d['same_box']} |")
+    L.append("")
+    L.append("## Configs\n")
+    for c in configs:
+        L.append(f"- `{c}`: `{' '.join(env['configs'][c])}`")
+    L.append("")
+    L.append("## Settings\n")
+    for m in models:
+        for c in configs:
+            a = agg.get(f"{c}/{m}")
+            if a and a["settings"]:
+                L.append(f"- {m} / {c}: `{json.dumps(a['settings'], ensure_ascii=False)}`")
+    return "\n".join(L) + "\n"
+
+
 def markdown(summary: dict) -> str:
     agg, env = summary["aggregate"], summary["environment"]
+    if env.get("throughput"):
+        return markdown_throughput(summary)
     ref = env["reference"]
     models = [m for m in summary["models"] if f"{ref}/{m}" in agg]
     images = env["images"]
@@ -392,6 +498,10 @@ def main():
     ap.add_argument("--fixtures", default=str(CRATE / "tests" / "fixtures"))
     ap.add_argument("--out", default=str(HERE / "results"))
     ap.add_argument("--no-single-thread", action="store_true")
+    ap.add_argument("--config-exe", action="append", default=[], metavar="NAME=PATH",
+                    help="runs config NAME with another build of openvino-bench (repeatable)")
+    ap.add_argument("--throughput", type=int, default=0, metavar="R",
+                    help="multi-image throughput mode: the images repeated R times per pass")
     args = ap.parse_args()
     args.models = args.models.split(",")
     added = []
@@ -409,15 +519,36 @@ def main():
         CONFIGS[name] = shlex.split(cli)
         added.append(name)
     args.reference = "base" if args.baseline_exe else "pure"
+    if args.throughput > 0:
+        CONFIGS.clear()
+        for name, cli in THROUGHPUT_CONFIGS.items():
+            CONFIGS[name] = [*cli, "--throughput", str(args.throughput)]
+        if args.baseline_exe:
+            raise SystemExit("--throughput does not combine with --baseline-exe")
+        for spec in args.add_config:
+            name, _, cli = spec.partition("=")
+            CONFIGS[name] = [*shlex.split(cli), "--throughput", str(args.throughput)]
+        args.reference = "pure-seq"
+        args.model_only_runs = 0
+        args.no_single_thread = True
+        added = []
     if args.configs:
         configs = args.configs.split(",")
     elif added:
         configs = list(dict.fromkeys([args.reference, "pure", *added]))
     else:
         configs = list(CONFIGS)
+    for spec in args.config_exe:
+        name, sep, path = spec.partition("=")
+        exe = Path(path).resolve()
+        if not sep or name not in CONFIGS or not exe.exists():
+            raise SystemExit(f"--config-exe expects an existing config and executable, got {spec!r}")
+        EXES[name] = exe
     unknown = [c for c in configs if c not in CONFIGS]
     if unknown:
         raise SystemExit(f"unknown configs: {unknown}")
+    if args.throughput > 0 and args.reference not in configs:
+        args.reference = configs[0]
     if args.reference not in configs:
         raise SystemExit(f"the reference config `{args.reference}` must be measured")
     out_dir = Path(args.out)

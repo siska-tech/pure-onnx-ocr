@@ -109,30 +109,75 @@ fn infer(
     Ok((out_shape, output.get_data::<f32>()?.to_vec()))
 }
 
-/// DBNet detection on OpenVINO (one infer request, used sequentially).
+/// DBNet detection on OpenVINO. With one request (the default), images run
+/// one after another; with several (multi-image throughput), concurrent
+/// callers each take a free request, so detections of different images
+/// overlap on OpenVINO streams.
 pub struct OvDetSession {
     pub compiled: CompiledModel,
-    request: Mutex<InferRequest>,
+    pub requests: OvDetRequests,
+}
+
+/// The infer requests of an [`OvDetSession`]: `Sync`, unlike `CompiledModel`,
+/// so they can be shared by threads that detect different images.
+pub struct OvDetRequests {
+    requests: Vec<Mutex<InferRequest>>,
+    free: Mutex<Vec<usize>>,
+    returned: std::sync::Condvar,
 }
 
 impl OvDetSession {
-    pub fn new(mut compiled: CompiledModel) -> Result<Self> {
-        let request = compiled.create_infer_request()?;
+    pub fn new(mut compiled: CompiledModel, requests: usize) -> Result<Self> {
+        let requests = (0..requests.max(1))
+            .map(|_| compiled.create_infer_request().map(Mutex::new))
+            .collect::<Result<Vec<_>, _>>()?;
+        let free = Mutex::new((0..requests.len()).collect());
         Ok(Self {
             compiled,
-            request: Mutex::new(request),
+            requests: OvDetRequests {
+                requests,
+                free,
+                returned: std::sync::Condvar::new(),
+            },
         })
     }
 
     /// Same contract as `DetInferenceSession::run`.
     pub fn run(&self, input: &PreprocessedDetInput) -> Result<DetInferenceOutput> {
+        self.requests.run(input)
+    }
+}
+
+impl OvDetRequests {
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Runs one detection on a free request, waiting for one if all are busy.
+    pub fn run(&self, input: &PreprocessedDetInput) -> Result<DetInferenceOutput> {
+        let index = {
+            let mut free = self.free.lock().unwrap();
+            loop {
+                if let Some(index) = free.pop() {
+                    break index;
+                }
+                free = self.returned.wait(free).unwrap();
+            }
+        };
+        let result = self.run_on(index, input);
+        self.free.lock().unwrap().push(index);
+        self.returned.notify_one();
+        result
+    }
+
+    fn run_on(&self, index: usize, input: &PreprocessedDetInput) -> Result<DetInferenceOutput> {
         let view = input
             .tensor
             .to_plain_array_view::<f32>()
             .map_err(|e| anyhow!("{e}"))?;
         let data = view.as_slice().context("non-contiguous input")?;
         let (shape, out) = infer(
-            &mut self.request.lock().unwrap(),
+            &mut self.requests[index].lock().unwrap(),
             input.tensor.shape(),
             data,
         )?;

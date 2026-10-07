@@ -12,6 +12,12 @@
 //!     [--threads N]            pure: inference threads (default: crate default)
 //!     [--rec-batch-size N]     both: recognition batch size (default 1 = crate default)
 //!     [--warmup]               pure: call OcrEngine::warmup for the first image's size after loading
+//!     [--throughput R]         both: multi-image throughput instead of the latency runs:
+//!                              the images repeated R times, `--runs` timed passes
+//!     [--many]                 both, with --throughput: process the images of a pass
+//!                              together (pure: run_many_from_images) instead of one by one
+//!     [--ov-det-requests N]    ov: detection infer requests (0 = optimal; default 1)
+//!     [--ov-det-streams N] [--ov-rec-streams N]  ov: NUM_STREAMS (default: from the hint)
 //!     [--ov-threads N]         ov: INFERENCE_NUM_THREADS (0 = auto)
 //!     [--ov-det-hint LATENCY]  ov: PERFORMANCE_HINT for detection
 //!     [--ov-rec-hint LATENCY]  ov: PERFORMANCE_HINT for recognition
@@ -55,6 +61,11 @@ struct Args {
     threads: Option<usize>,
     rec_batch_size: usize,
     warmup: bool,
+    throughput: usize,
+    many: bool,
+    ov_det_requests: usize,
+    ov_det_streams: Option<String>,
+    ov_rec_streams: Option<String>,
     ov_threads: usize,
     ov_det_hint: String,
     ov_rec_hint: String,
@@ -74,6 +85,11 @@ fn parse_args() -> Args {
         threads: None,
         rec_batch_size: 1,
         warmup: false,
+        throughput: 0,
+        many: false,
+        ov_det_requests: 1,
+        ov_det_streams: None,
+        ov_rec_streams: None,
         ov_threads: 0,
         ov_det_hint: "LATENCY".into(),
         ov_rec_hint: "LATENCY".into(),
@@ -94,6 +110,11 @@ fn parse_args() -> Args {
             "--threads" => a.threads = Some(value().parse().expect("number")),
             "--rec-batch-size" => a.rec_batch_size = value().parse().expect("number"),
             "--warmup" => a.warmup = true,
+            "--throughput" => a.throughput = value().parse().expect("number"),
+            "--many" => a.many = true,
+            "--ov-det-requests" => a.ov_det_requests = value().parse().expect("number"),
+            "--ov-det-streams" => a.ov_det_streams = Some(value()),
+            "--ov-rec-streams" => a.ov_rec_streams = Some(value()),
             "--ov-threads" => a.ov_threads = value().parse().expect("number"),
             "--ov-det-hint" => a.ov_det_hint = value(),
             "--ov-rec-hint" => a.ov_rec_hint = value(),
@@ -301,6 +322,136 @@ impl OvPipeline {
     }
 }
 
+impl OvPipeline {
+    /// OpenVINO counterpart of `OcrEngine::run_many_from_images`: the images
+    /// of a group (as many as the engine's threads) are detected in parallel,
+    /// each taking a free detection request, then the recognition batches of
+    /// the whole group run on the recognition requests together. Batches are
+    /// formed per image exactly as in [`run`](Self::run).
+    fn run_many(&self, images: &[DynamicImage]) -> Result<Vec<Recognized>> {
+        let group = self.pool.as_ref().map_or(1, |p| p.current_num_threads());
+        let mut out = Vec::with_capacity(images.len());
+        // Only `Sync` parts cross threads (`CompiledModel` is not `Sync`).
+        let (det_pre, det_post, unclipper) = (&self.det_pre, &self.det_post, &self.unclipper);
+        let (requests, crop_mode) = (&self.det.requests, self.config.rec_crop_mode);
+        let detect = |image: &DynamicImage| {
+            detect_crops(det_pre, det_post, unclipper, requests, crop_mode, image)
+        };
+        for chunk in images.chunks(group) {
+            let detected: Vec<(Vec<Polygon<f64>>, Vec<RgbImage>)> = match &self.pool {
+                Some(pool) if chunk.len() > 1 => {
+                    pool.install(|| chunk.par_iter().map(detect).collect::<Vec<_>>())
+                }
+                _ => chunk.iter().map(detect).collect(),
+            }
+            .into_iter()
+            .collect::<Result<_>>()?;
+
+            let mut jobs: Vec<(usize, Vec<usize>)> = Vec::new();
+            for (set, (_, crops)) in detected.iter().enumerate() {
+                let mut order: Vec<usize> = (0..crops.len()).collect();
+                order.sort_by(|&a, &b| aspect_ratio(&crops[a]).total_cmp(&aspect_ratio(&crops[b])));
+                jobs.extend(
+                    order
+                        .chunks(self.config.rec_batch_size.max(1))
+                        .map(|c| (set, c.to_vec())),
+                );
+            }
+            let (rec_pre, detected_ref) = (&self.rec_pre, &detected);
+            let preprocess = |(set, chunk): &(usize, Vec<usize>)| {
+                let crops = &detected_ref[*set].1;
+                let batch: Vec<RgbImage> = chunk.iter().map(|&i| crops[i].clone()).collect();
+                rec_pre.process_images(&batch)
+            };
+            let batches = match &self.pool {
+                Some(pool) if jobs.len() > 1 => {
+                    pool.install(|| jobs.par_iter().map(preprocess).collect::<Vec<_>>())
+                }
+                _ => jobs.iter().map(preprocess).collect(),
+            }
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow!("{e:?}"))?;
+            let inferences = self.rec.run_all(&batches)?;
+
+            let mut sequences: Vec<Vec<Option<_>>> = detected
+                .iter()
+                .map(|(_, crops)| vec![None; crops.len()])
+                .collect();
+            for ((set, chunk), inference) in jobs.iter().zip(&inferences) {
+                let decoded = self
+                    .rec_post
+                    .process(inference)
+                    .map_err(|e| anyhow!("{e:?}"))?;
+                for (&index, sequence) in chunk.iter().zip(decoded) {
+                    sequences[*set][index] = Some(sequence);
+                }
+            }
+            for ((polygons, _), sequences) in detected.into_iter().zip(sequences) {
+                out.push(
+                    polygons
+                        .into_iter()
+                        .zip(sequences)
+                        .map(|(polygon, sequence)| {
+                            let sequence = sequence.expect("every crop is decoded");
+                            (sequence.text, sequence.confidence, polygon)
+                        })
+                        .collect(),
+                );
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Detection and cropping of one image, as in [`OvPipeline::run`].
+fn detect_crops(
+    det_pre: &DetPreProcessor,
+    det_post: &DetPostProcessor,
+    unclipper: &DetPolygonUnclipper,
+    requests: &ov::OvDetRequests,
+    crop_mode: RecCropMode,
+    image: &DynamicImage,
+) -> Result<(Vec<Polygon<f64>>, Vec<RgbImage>)> {
+    let image_dims = image.dimensions();
+    let preprocessed = det_pre.process(image).map_err(|e| anyhow!("{e:?}"))?;
+    let inference = requests.run(&preprocessed)?;
+    let boxes = det_post
+        .db_boxes(&inference.probability_map, unclipper)
+        .map_err(|e| anyhow!("{e:?}"))?;
+    let (scale_x, scale_y) = preprocessed.inverse_scale();
+    let (width, height) = (image_dims.0 as f64, image_dims.1 as f64);
+    let polygons: Vec<Polygon<f64>> = boxes
+        .into_iter()
+        .map(|det_box| {
+            let mut coords: Vec<geo_types::Coord<f64>> = det_box
+                .quad
+                .iter()
+                .map(|&(x, y)| geo_types::Coord {
+                    x: (x * scale_x).round().clamp(0.0, width),
+                    y: (y * scale_y).round().clamp(0.0, height),
+                })
+                .collect();
+            coords.push(coords[0]);
+            Polygon::new(coords.into(), vec![])
+        })
+        .collect();
+    let rgb = image.to_rgb8();
+    let crops = polygons
+        .iter()
+        .map(|polygon| {
+            if crop_mode == RecCropMode::Rotated {
+                if let Some(crop) = min_area_quad(polygon).and_then(|quad| crop_quad(&rgb, &quad)) {
+                    return crop;
+                }
+            }
+            let (x, y, w, h) = text_region(polygon, image_dims);
+            imageops::crop_imm(&rgb, x, y, w, h).to_image()
+        })
+        .collect();
+    Ok((polygons, crops))
+}
+
 fn zero_stage() -> StageTimings {
     StageTimings {
         preprocess: Duration::ZERO,
@@ -355,6 +506,84 @@ fn text_region(polygon: &Polygon<f64>, image_dims: (u32, u32)) -> (u32, u32, u32
 
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+/// Multi-image throughput: the images repeated `--throughput` times form a
+/// pass; one warm-up pass (which compiles the plans) is followed by `--runs`
+/// timed passes, each processed one image at a time or, with `--many`,
+/// together. Every pass must return the warm-up pass's results.
+fn throughput(
+    args: &Args,
+    images: &[(String, DynamicImage)],
+    run_fn: &dyn Fn(&DynamicImage) -> Result<(Recognized, OcrTimings)>,
+    many_fn: &dyn Fn(&[DynamicImage]) -> Result<Vec<Recognized>>,
+    mut report: Value,
+) -> Result<()> {
+    let batch: Vec<DynamicImage> = (0..args.throughput)
+        .flat_map(|_| images.iter().map(|(_, image)| image.clone()))
+        .collect();
+    let pass = || -> Result<Vec<Recognized>> {
+        if args.many {
+            many_fn(&batch)
+        } else {
+            batch.iter().map(|image| Ok(run_fn(image)?.0)).collect()
+        }
+    };
+    let t = Instant::now();
+    let reference = pass()?;
+    let warmup_s = t.elapsed().as_secs_f64();
+    let reference_json: Vec<Value> = reference.iter().map(results_json).collect();
+    let mut per_image = serde_json::Map::new();
+    for ((name, _), results) in images.iter().zip(&reference) {
+        per_image.insert(
+            name.clone(),
+            json!({ "regions": results.len(), "results": results_json(results) }),
+        );
+    }
+
+    let cpu0 = winproc::cpu_seconds();
+    let wall0 = Instant::now();
+    let mut passes = Vec::new();
+    for _ in 0..args.runs {
+        let t = Instant::now();
+        let results = pass()?;
+        passes.push(t.elapsed().as_secs_f64());
+        let same = results.iter().map(results_json).collect::<Vec<_>>() == reference_json;
+        if !same {
+            bail!("a timed pass returned different results from the warm-up pass");
+        }
+    }
+    let wall = wall0.elapsed().as_secs_f64();
+    let cpu = winproc::cpu_seconds() - cpu0;
+    let median_s = median_ms(passes.clone());
+    report["images"] = Value::Object(per_image);
+    report["throughput"] = json!({
+        "mode": if args.many { "many" } else { "seq" },
+        "images_per_pass": batch.len(),
+        "warmup_pass_s": warmup_s,
+        "passes_s": passes,
+        "median_pass_s": median_s,
+        "images_per_s": batch.len() as f64 / median_s,
+        "avg_cores_busy": cpu / wall,
+    });
+    report["after_pipeline"] = json!({
+        "memory": mem_json(winproc::memory()),
+        "threads": winproc::thread_count(),
+    });
+    eprintln!(
+        "[{} {} {}] {} images/pass, {:.2} img/s",
+        args.backend,
+        args.model,
+        if args.many { "many" } else { "seq" },
+        batch.len(),
+        batch.len() as f64 / median_s
+    );
+    let text = serde_json::to_string_pretty(&report)?;
+    match &args.json {
+        Some(path) => std::fs::write(path, text)?,
+        None => println!("{text}"),
+    }
+    Ok(())
 }
 
 fn timings_json(t: &OcrTimings) -> Value {
@@ -468,6 +697,7 @@ fn main() -> Result<()> {
     let cpu_start = winproc::cpu_seconds();
     let load_start = Instant::now();
     let run_fn: Box<dyn Fn(&DynamicImage) -> Result<(Recognized, OcrTimings)>>;
+    let many_fn: Box<dyn Fn(&[DynamicImage]) -> Result<Vec<Recognized>>>;
     let threads_used: usize;
     match args.backend.as_str() {
         "pure" => {
@@ -502,6 +732,20 @@ fn main() -> Result<()> {
                 "multithread_supported": pure_onnx_ocr::MULTITHREAD_SUPPORTED,
                 "default_inference_threads": pure_onnx_ocr::default_inference_threads(),
             });
+            let engine = std::rc::Rc::new(engine);
+            let many_engine = std::rc::Rc::clone(&engine);
+            many_fn = Box::new(move |images| {
+                many_engine
+                    .run_many_from_images(images)
+                    .into_iter()
+                    .map(|result| {
+                        Ok(result?
+                            .into_iter()
+                            .map(|r| (r.text, r.confidence, r.bounding_box))
+                            .collect())
+                    })
+                    .collect()
+            });
             run_fn = Box::new(move |image| {
                 let run = engine.run_with_metrics_from_image(image)?;
                 let results = run
@@ -521,15 +765,24 @@ fn main() -> Result<()> {
             let det_settings = ov::OvSettings {
                 hint: args.ov_det_hint.clone(),
                 threads: args.ov_threads,
-                streams: None,
+                streams: args.ov_det_streams.clone(),
             };
             let rec_settings = ov::OvSettings {
                 hint: args.ov_rec_hint.clone(),
                 threads: args.ov_threads,
-                streams: None,
+                streams: args.ov_rec_streams.clone(),
             };
             let det_compiled = ov::compile(&mut core, &det_onnx, &det_settings)?;
             let rec_compiled = ov::compile(&mut core, &rec_onnx, &rec_settings)?;
+            let det_requests = if args.ov_det_requests == 0 {
+                det_compiled
+                    .get_property(&openvino::PropertyKey::OptimalNumberOfInferRequests)
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1)
+            } else {
+                args.ov_det_requests
+            };
             let requests = if args.ov_rec_requests == 0 {
                 rec_compiled
                     .get_property(&openvino::PropertyKey::OptimalNumberOfInferRequests)
@@ -550,7 +803,7 @@ fn main() -> Result<()> {
                     std::sync::Arc::new(dictionary),
                     config.rec_postprocessor.clone(),
                 ),
-                det: ov::OvDetSession::new(det_compiled)?,
+                det: ov::OvDetSession::new(det_compiled, det_requests)?,
                 rec: ov::OvRecSession::new(rec_compiled, requests)?,
                 pool: (threads_used > 1).then(|| {
                     rayon::ThreadPoolBuilder::new()
@@ -565,8 +818,12 @@ fn main() -> Result<()> {
                 "det": ov::describe(&pipeline.det.compiled),
                 "rec": ov::describe(&pipeline.rec.compiled),
                 "rec_requests": pipeline.rec.request_count(),
+                "det_requests": pipeline.det.requests.len(),
                 "preprocess_threads": threads_used,
             });
+            let pipeline = std::rc::Rc::new(pipeline);
+            let many_pipeline = std::rc::Rc::clone(&pipeline);
+            many_fn = Box::new(move |images| many_pipeline.run_many(images));
             run_fn = Box::new(move |image| pipeline.run(image));
         }
         other => bail!("unknown backend {other}"),
@@ -576,6 +833,11 @@ fn main() -> Result<()> {
         "memory": mem_json(winproc::memory()),
         "threads": winproc::thread_count(),
     });
+
+    if args.throughput > 0 {
+        return throughput(&args, &images, &run_fn, &many_fn, report);
+    }
+    drop(many_fn);
 
     // ---- Pipeline: first (cold) run per image, then warm runs ----
     let mut per_image = serde_json::Map::new();
@@ -677,7 +939,7 @@ fn main() -> Result<()> {
                     threads: args.ov_threads,
                     streams: None,
                 };
-                let det = ov::OvDetSession::new(ov::compile(&mut core, &det_onnx, &settings)?)?;
+                let det = ov::OvDetSession::new(ov::compile(&mut core, &det_onnx, &settings)?, 1)?;
                 let rec = ov::OvRecSession::new(ov::compile(&mut core, &rec_onnx, &settings)?, 1)?;
                 let extra = json!({
                     "det": ov::describe(&det.compiled),
