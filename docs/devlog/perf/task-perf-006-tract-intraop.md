@@ -125,6 +125,12 @@ OpenVINO の値は報告書のもので、同じ時間帯に交互に計測し�
 - 2026-10-07: x86_64 の depthwise カーネル、タップ数の上限、パックの並列化を実装し、それぞれ単体テストを付けた（`matches_scalar_bit_for_bit`、`multithreaded_pack_matches_serial`）。
 - 2026-10-07: tract-profile に `output_hash` を追加し、ビット単位の一致を確かめた。
 - 2026-10-07: openvino-bench で、tract 0.23.8 と修正版を交互に 3 ラウンド計測した（上の表）。
+- 2026-10-08: 3 つのブランチを upstream の最新の main（`252521b62`）に載せ直した（衝突なし）。tract-linalg 3,861 件、tract-core 355 件のテストが成功し、検出の出力のハッシュは載せ直す前と同じだった。
+- 2026-10-08: `siska-tech/tract` に fork し、PR を作成した。
+  - [sonos/tract#2976](https://github.com/sonos/tract/pull/2976): linalg: add an x86_64 depthwise_w kernel
+  - [sonos/tract#2977](https://github.com/sonos/tract/pull/2977): core: hand 9x9 depthwise zones to the vectorised kernel
+  - [sonos/tract#2978](https://github.com/sonos/tract/pull/2978): linalg: pack activation panels on the executor
+  - レビューへの対応は、tract のルールに従い作者が行う。
 
 ## テスト
 - tract: `cargo test --release -p tract-linalg --features multithread-mm`（3,861 件）と `cargo test --release -p tract-core`（354 件）が成功した。`cargo fmt --all --check` も通った。clippy の警告は 126 件で、変更前と同じ（すべて既存のもの）。
