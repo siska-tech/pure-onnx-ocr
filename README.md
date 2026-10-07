@@ -97,7 +97,7 @@ fn main() -> Result<(), OcrError> {
         .det_limit_side_len(960)   // 任意調整: 入力画像の最大長辺
         .det_unclip_ratio(1.5)     // 任意調整: 検出ポリゴンのオフセット率
         .rec_batch_size(1)         // 任意調整: 認識推論のバッチサイズ（既定 1 が最速）
-        .inference_threads(8)      // 任意調整: 推論スレッド数（既定は論理 CPU 数、最大 8）
+        .inference_threads(8)      // 任意調整: 推論スレッド数（既定は論理 CPU 数、最大 16）
         .det_box_threshold(0.6)    // 任意調整: 検出領域の平均スコア下限 (PaddleOCR の box_thresh)
         .build()?;
 
@@ -188,14 +188,16 @@ cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg
 | 検出 YAML のしきい値を使う | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | パイプラインの既定値 (0.3 / 0.6 / 1.5) |
 | ページの向き補正（0/90/180/270） | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | 無効 |
 | 行の上下補正（0/180） | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | 無効 |
-| 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 8）。WebAssembly では 1 |
+| 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 16）。WebAssembly では 1 |
 | 推論計画のキャッシュ上限 | `plan_cache_capacity(4, 16)` | なし | 検出 4 / 認識 16 |
+| 推論計画の事前コンパイル | `engine.warmup(width, height)` | なし | 初回の実行時にコンパイル |
+| 複数画像の一括処理（結果は 1 枚ずつと同じ） | `engine.run_many_from_paths(&paths)` / `run_many_from_images(&images)` | なし | 1 枚ずつ `run_*` |
 | 読み込み・推論ログ | `log` クレートで出力 | `-v` / `--verbose` | Warn 以上のみ |
 
 向きの分類器は、Hugging Face の `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` と `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx` から取得します。行の向きの分類器は `x1_0` 版もありますが、tract 上では `x0_25` 版のほうが約 3 倍速いため、こちらを推奨します。
 
 > **既知の制約:**
-> - 推論は既定で論理 CPU 数（最大 8）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）では常にシングルスレッドです。
+> - 推論は既定で論理 CPU 数（最大 16）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）では常にシングルスレッドです。
 > - PP-OCRv6 medium は CPU (tract・8 スレッド) で 1 枚あたり約 4.5 秒かかります。速度を優先する場合は tiny / small を推奨します。PP-OCRv5 との比較は `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` を参照してください。
 > - 行の上下補正は、短い大文字だけの行（`TAIYUAN` など）で判定を誤ることがあります。
 > - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。

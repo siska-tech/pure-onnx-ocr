@@ -1,0 +1,8 @@
+/target
+# Raw per-process reports; the summaries are kept as the data behind
+# docs/devlog/perf/benchmark-openvino*.md.
+/results/*
+!/results/summary.md
+!/results/summary.json
+!/results/summary-throughput.md
+!/results/summary-throughput.json

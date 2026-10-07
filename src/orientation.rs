@@ -11,7 +11,7 @@
 //! Both are image classifiers with ImageNet normalisation on RGB input and a
 //! softmax output of shape `[N, classes]`.
 
-use crate::onnx_model::{load_paddle_onnx, load_paddle_onnx_from_bytes, PlanCache};
+use crate::onnx_model::{load_paddle_onnx, load_paddle_onnx_from_bytes, SharedPlanCache};
 use crate::paddle_config::{PaddleConfigError, PaddleInferenceConfig};
 use crate::preprocessing::{IMAGENET_MEAN, IMAGENET_STD};
 use image::{imageops, imageops::FilterType, RgbImage};
@@ -118,7 +118,7 @@ fn label_to_angle(label: &str) -> Result<u32, OrientationError> {
 #[derive(Debug)]
 pub struct OrientationClassifier {
     base_model: InferenceModel,
-    cache: std::sync::Mutex<PlanCache<usize>>,
+    cache: SharedPlanCache<usize>,
     executor: crate::threading::Executor,
     resize: ClassifierResize,
     mean: [f32; 3],
@@ -197,7 +197,7 @@ impl OrientationClassifier {
 
         Ok(Self {
             base_model: model,
-            cache: std::sync::Mutex::new(PlanCache::new(2)),
+            cache: SharedPlanCache::new(2),
             executor: crate::threading::Executor::SingleThread,
             resize,
             mean: config.normalize_mean.unwrap_or(IMAGENET_MEAN),
@@ -226,6 +226,23 @@ impl OrientationClassifier {
     /// Classifies every image. Images are processed in a single batch, so
     /// callers should chunk large inputs.
     pub fn classify(&self, images: &[RgbImage]) -> TractResult<Vec<OrientationPrediction>> {
+        self.classify_on(images, &self.executor)
+    }
+
+    /// Same as [`classify`](Self::classify), single-threaded, for callers
+    /// that already run several images in parallel.
+    pub(crate) fn classify_single_threaded(
+        &self,
+        images: &[RgbImage],
+    ) -> TractResult<Vec<OrientationPrediction>> {
+        self.classify_on(images, &crate::threading::Executor::SingleThread)
+    }
+
+    fn classify_on(
+        &self,
+        images: &[RgbImage],
+        executor: &crate::threading::Executor,
+    ) -> TractResult<Vec<OrientationPrediction>> {
         if images.is_empty() {
             return Ok(Vec::new());
         }
@@ -245,8 +262,7 @@ impl OrientationClassifier {
         let plan = self.plan_for_batch(images.len())?;
         let tensor: Tensor = batch.into_dyn().into();
         let run_start = crate::time::Instant::now();
-        let outputs =
-            crate::threading::run_with(&self.executor, || plan.run(tvec!(tensor.into())))?;
+        let outputs = crate::threading::run_with(executor, || plan.run(tvec!(tensor.into())))?;
         log::debug!(
             "[Orientation] classified {} image(s) in {:?}",
             images.len(),
@@ -310,10 +326,16 @@ impl OrientationClassifier {
         }
     }
 
+    /// Compiles and caches the plan for `batch` images.
+    pub(crate) fn prepare_plan(&self, batch: usize) -> TractResult<()> {
+        self.plan_for_batch(batch).map(drop)
+    }
+
     fn plan_for_batch(&self, batch: usize) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get(batch) {
-            return Ok(plan);
-        }
+        self.cache.get_or_compile(batch, || self.compile(batch))
+    }
+
+    fn compile(&self, batch: usize) -> TractResult<Arc<TypedRunnableModel>> {
         let (width, height) = self.resize.input_dims();
         let mut model = self.base_model.clone();
         model.set_input_fact(
@@ -334,7 +356,6 @@ impl OrientationClassifier {
             batch,
             compile_start.elapsed()
         );
-        crate::onnx_model::lock_cache(&self.cache).insert(batch, Arc::clone(&plan));
         Ok(plan)
     }
 }

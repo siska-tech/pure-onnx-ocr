@@ -5,6 +5,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/).
 Before 1.0, minor versions may contain breaking changes.
 
+## [Unreleased]
+
+### Added
+
+- `OcrEngine::run_many_from_images` and `run_many_from_paths` process several
+  images in one call with the same results as one call per image. Detection
+  and the orientation classifiers run on several images at once and the
+  recognition batches of all images run together: throughput rose 1.45-2.06x
+  on PP-OCRv6 (16 images, 16-thread i7-1360P). `examples/throughput_bench.rs`
+  measures it.
+- `OcrEngine::warmup(width, height)` compiles the detection plan for an
+  image size, the recognition plan for text lines of the minimum width and
+  the orientation classifiers' plans ahead of the first run.
+
+### Changed
+
+- The default number of inference threads is now the number of logical CPUs
+  capped at 16 (was 8). Recognition runs batches in parallel and keeps
+  scaling past 8 threads: end-to-end time dropped by 3-18% on a 16-thread
+  i7-1360P with identical output. Machines with 8 or fewer logical CPUs are
+  unaffected. `inference_threads(8)` restores the old behaviour.
+
+### Fixed
+
+- Threads that need the same not-yet-compiled plan now wait for a single
+  compilation instead of each compiling its own copy. On a cold engine,
+  most recognition batches share one width, so an image used to compile
+  the same plan up to 16 times: the first run is now 10-23% faster and its
+  peak memory is back to the 8-thread level (PP-OCRv6 medium 1.6 GB to
+  1.0 GB).
+
 ## [0.2.1] - 2026-10-03
 
 ### Fixed
@@ -129,6 +160,7 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/siska-tech/pure-onnx-ocr/releases/tag/v0.1.0

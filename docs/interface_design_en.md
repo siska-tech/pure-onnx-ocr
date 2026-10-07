@@ -33,7 +33,7 @@ The crate is `pure_onnx_ocr`, and the main types are re-exported at the root.
 | Type | Main members |
 | :--- | :--- |
 | `OcrEngineBuilder` | `new`, model sources and parameters (below), `build` |
-| `OcrEngine` | `run_from_path`, `run_from_image`, `run_from_bytes`, `run_with_metrics_{path,image,bytes}`, `config`, `det_model_path`, `rec_model_path`, `dictionary_path`, `rec_batch_size` |
+| `OcrEngine` | `run_from_path`, `run_from_image`, `run_from_bytes`, `run_with_metrics_{path,image,bytes}`, `run_many_from_{images,paths}`, `warmup`, `config`, `det_model_path`, `rec_model_path`, `dictionary_path`, `rec_batch_size` |
 | `OcrResult` | `text: String`, `confidence: f32`, `bounding_box: Polygon<f64>` |
 | `OcrRunWithMetrics` | `results`, `timings: OcrTimings`, `doc_orientation_angle: Option<u32>` |
 | `OcrTimings` / `StageTimings` | Total time, decode time, orientation time, and preprocess / inference / post-process time for each pipeline |
@@ -100,13 +100,15 @@ The crate is `pure_onnx_ocr`, and the main types are re-exported at the root.
 | `rec_batch_size` | 1 | Fastest with tract |
 | `rec_use_space_char` | true | Append `" "` to the dictionary |
 | `rec_crop_mode` | `Rotated` | Crop strategy |
-| `inference_threads` | logical CPUs, at most 8 | Always 1 on WebAssembly |
+| `inference_threads` | logical CPUs, at most 16 | Always 1 on WebAssembly |
 | `plan_cache_capacity(det, rec)` | 4, 16 | Compiled plans kept per model |
 
 ### `OcrEngine`
 
 - `run_*` runs synchronously. The engine is `Send + Sync`, so it can be shared in an `Arc`.
 - `config()` returns the effective configuration, after the YAML values are applied.
+- `run_many_from_images(&[DynamicImage])` / `run_many_from_paths(&[P])` return one `Result<Vec<OcrResult>, OcrError>` per image, in order, with the same results as one `run_*` call per image; detection and recognition run across images in parallel. A failing image does not stop the others.
+- `warmup(width, height)` compiles the detection plan for that image size, the recognition plan for minimum-width lines and the orientation classifiers ahead of the first run. Results are unchanged.
 - The path getters return `Option<&Path>`, which is `None` for in-memory inputs.
 
 ## 3. Example

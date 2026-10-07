@@ -111,10 +111,102 @@ impl<K: PartialEq + Copy> PlanCache<K> {
 
 /// Locks a plan cache, ignoring poisoning (a panic while holding the lock
 /// cannot leave the cache in an invalid state).
-pub(crate) fn lock_cache<T>(cache: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+fn lock_cache<T>(cache: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[derive(Debug)]
+struct SharedState<K> {
+    plans: PlanCache<K>,
+    /// Keys whose plan one thread is compiling right now.
+    compiling: Vec<K>,
+}
+
+/// [`PlanCache`] shared between threads that compiles each shape only once.
+///
+/// Recognition runs batches in parallel and most crops share one width (the
+/// 320-pixel minimum), so on a cold cache every worker used to miss on the
+/// same key and compile its own copy of the plan: 13-16 identical
+/// compilations per image with 16 threads, which slowed the first run down
+/// and multiplied its peak memory. Now the first thread compiles while the
+/// others wait for the result. Different shapes still compile concurrently,
+/// and the lock is never held while compiling.
+#[derive(Debug)]
+pub(crate) struct SharedPlanCache<K> {
+    state: std::sync::Mutex<SharedState<K>>,
+    compiled: std::sync::Condvar,
+}
+
+impl<K: PartialEq + Copy> SharedPlanCache<K> {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            state: std::sync::Mutex::new(SharedState {
+                plans: PlanCache::new(capacity),
+                compiling: Vec::new(),
+            }),
+            compiled: std::sync::Condvar::new(),
+        }
+    }
+
+    pub(crate) fn set_capacity(&self, capacity: usize) {
+        lock_cache(&self.state).plans.set_capacity(capacity);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        lock_cache(&self.state).plans.len()
+    }
+
+    /// Returns the cached plan for `key`, or compiles it with `compile`.
+    ///
+    /// While another thread compiles the same key, waits for it and reuses
+    /// its plan. If that compilation fails, a waiting thread compiles again
+    /// and reports its own error.
+    pub(crate) fn get_or_compile(
+        &self,
+        key: K,
+        compile: impl FnOnce() -> TractResult<std::sync::Arc<TypedRunnableModel>>,
+    ) -> TractResult<std::sync::Arc<TypedRunnableModel>> {
+        let mut state = lock_cache(&self.state);
+        loop {
+            if let Some(plan) = state.plans.get(key) {
+                return Ok(plan);
+            }
+            if !state.compiling.contains(&key) {
+                break;
+            }
+            state = self
+                .compiled
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.compiling.push(key);
+        drop(state);
+
+        // Clears the mark and wakes the waiters even if `compile` fails or
+        // panics.
+        let _in_flight = InFlight { cache: self, key };
+        let plan = compile()?;
+        lock_cache(&self.state)
+            .plans
+            .insert(key, std::sync::Arc::clone(&plan));
+        Ok(plan)
+    }
+}
+
+struct InFlight<'a, K: PartialEq + Copy> {
+    cache: &'a SharedPlanCache<K>,
+    key: K,
+}
+
+impl<K: PartialEq + Copy> Drop for InFlight<'_, K> {
+    fn drop(&mut self) {
+        lock_cache(&self.cache.state)
+            .compiling
+            .retain(|k| *k != self.key);
+        self.cache.compiled.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +233,41 @@ mod tests {
         assert!(cache.get(1).is_some());
         assert!(cache.get(3).is_some());
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn concurrent_misses_compile_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache = SharedPlanCache::new(4);
+        let compiles = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    cache
+                        .get_or_compile(320u32, || {
+                            compiles.fetch_add(1, Ordering::SeqCst);
+                            // Keep the key in flight while the others arrive.
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            Ok(dummy_plan())
+                        })
+                        .expect("compile should succeed");
+                });
+            }
+        });
+        assert_eq!(compiles.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn failed_compile_lets_next_caller_retry() {
+        let cache = SharedPlanCache::new(4);
+        let failed = cache.get_or_compile(1u32, || {
+            Err(tract_onnx::tract_core::internal::anyhow!("boom"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(cache.len(), 0);
+        assert!(cache.get_or_compile(1u32, || Ok(dummy_plan())).is_ok());
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]

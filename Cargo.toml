@@ -11,7 +11,7 @@ homepage = "https://github.com/siska-tech/pure-onnx-ocr"
 documentation = "https://docs.rs/pure_onnx_ocr"
 keywords = ["ocr", "onnx", "paddleocr", "text-detection", "text-recognition"]
 categories = ["computer-vision", "science"]
-exclude = ["bindings/"]
+exclude = ["bindings/", "tools/"]
 
 [features]
 default = ["multithread"]

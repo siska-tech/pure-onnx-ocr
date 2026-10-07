@@ -529,6 +529,73 @@ impl OcrEngine {
         &self.config
     }
 
+    /// Compiles the inference plans that the first run on a `width` x
+    /// `height` image would otherwise compile, so that run starts at warm
+    /// speed.
+    ///
+    /// The engine compiles a plan per input shape on first use (roughly
+    /// 0.1-1 s each, depending on the model). This prepares the detection
+    /// plan for the image size, the recognition plan for text lines that
+    /// fit the minimum recognition width (most lines), and the orientation
+    /// classifiers when configured. The plans compile in parallel on the
+    /// engine's thread pool. Wider text lines, other image sizes and
+    /// documents rotated by 90 or 270 degrees still compile their plans on
+    /// first use. Results are unaffected: the same plans are used either way.
+    ///
+    /// Call it once after [`OcrEngineBuilder::build`], for example while a
+    /// server starts up. It is not needed for correctness.
+    pub fn warmup(&self, width: u32, height: u32) -> Result<(), OcrError> {
+        enum Job {
+            Detection(u32, u32),
+            Recognition(usize, u32),
+            DocOrientation,
+            TextlineOrientation(usize),
+        }
+
+        let (det_width, det_height) = self
+            .detection
+            .preprocessor
+            .resized_dims(width.max(1), height.max(1));
+        let rec_batch = self.config.rec_batch_size.max(1);
+        let mut jobs = vec![
+            Job::Detection(det_width, det_height),
+            Job::Recognition(rec_batch, self.recognition.preprocessor.min_batch_width()),
+        ];
+        if self.doc_orientation.is_some() {
+            jobs.push(Job::DocOrientation);
+        }
+        if self.textline_orientation.is_some() {
+            jobs.push(Job::TextlineOrientation(rec_batch));
+        }
+
+        // Compilation itself is single-threaded, so the jobs run side by
+        // side on the pool.
+        crate::threading::parallel_map(&self.recognition.executor, &jobs, |job| match *job {
+            Job::Detection(w, h) => self
+                .detection
+                .session
+                .prepare_plan(w, h)
+                .map_err(|source| OcrError::DetectionInference { source }),
+            Job::Recognition(batch, w) => self
+                .recognition
+                .session
+                .prepare_plan(batch, w)
+                .map_err(|source| OcrError::RecognitionInference { source }),
+            Job::DocOrientation => self
+                .doc_orientation
+                .as_ref()
+                .map_or(Ok(()), |classifier| classifier.prepare_plan(1))
+                .map_err(|source| OcrError::OrientationInference { source }),
+            Job::TextlineOrientation(batch) => self
+                .textline_orientation
+                .as_ref()
+                .map_or(Ok(()), |classifier| classifier.prepare_plan(batch))
+                .map_err(|source| OcrError::OrientationInference { source }),
+        })
+        .into_iter()
+        .collect()
+    }
+
     /// Returns the path used for the detection model.
     ///
     /// `None` when the model was supplied as bytes.
@@ -577,8 +644,105 @@ impl OcrEngine {
         image: &DynamicImage,
     ) -> Result<OcrRunWithMetrics, OcrError> {
         let pipeline_start = Instant::now();
+        let mut regions = self.detect_regions(image, Parallelism::Engine)?;
+        let mut sequences = Vec::new();
+        if !regions.crops.is_empty() {
+            let (decoded, mut recognition_timings) = self
+                .recognition
+                .run_with_timings(&regions.crops, self.config.rec_batch_size)?;
+            recognition_timings.preprocess += regions.timings.recognition.preprocess;
+            regions.timings.recognition = recognition_timings;
+            sequences = decoded;
+        }
+        let mut run = Self::assemble(regions, sequences)?;
+        run.timings.total = pipeline_start.elapsed();
+        Ok(run)
+    }
+
+    /// Runs OCR on several images and returns one result per image, in order.
+    ///
+    /// Gives the same results as calling [`run_from_image`](Self::run_from_image)
+    /// on each image, but keeps more cores busy: detection (and the
+    /// orientation classifiers) run on several images at once, one image
+    /// per thread, and the recognition batches of all images run together.
+    /// Images are processed in groups of at most
+    /// [`inference_threads`](OcrEngineConfig::inference_threads) to bound
+    /// memory. A failing image yields an `Err` in its slot without stopping
+    /// the others.
+    pub fn run_many_from_images(
+        &self,
+        images: &[DynamicImage],
+    ) -> Vec<Result<Vec<OcrResult>, OcrError>> {
+        self.run_many(images, |image| Ok(std::borrow::Cow::Borrowed(image)))
+    }
+
+    /// Same as [`run_many_from_images`](Self::run_many_from_images) for image
+    /// files; decoding also runs in parallel.
+    pub fn run_many_from_paths<P: AsRef<Path> + Sync>(
+        &self,
+        paths: &[P],
+    ) -> Vec<Result<Vec<OcrResult>, OcrError>> {
+        self.run_many(paths, |path| {
+            let path = path.as_ref();
+            image::open(path)
+                .map(std::borrow::Cow::Owned)
+                .map_err(|source| OcrError::ImageDecode {
+                    source,
+                    path: path.to_path_buf(),
+                })
+        })
+    }
+
+    fn run_many<T: Sync>(
+        &self,
+        inputs: &[T],
+        load: impl Fn(&T) -> Result<std::borrow::Cow<'_, DynamicImage>, OcrError> + Sync,
+    ) -> Vec<Result<Vec<OcrResult>, OcrError>> {
+        let executor = &self.recognition.executor;
+        let group = self.config.inference_threads.max(1);
+        let mut results = Vec::with_capacity(inputs.len());
+        for chunk in inputs.chunks(group) {
+            // A lone image has the pool to itself.
+            let parallelism = if chunk.len() > 1 {
+                Parallelism::Outer
+            } else {
+                Parallelism::Engine
+            };
+            let detected = crate::threading::parallel_map(executor, chunk, |input| {
+                let image = load(input)?;
+                self.detect_regions(&image, parallelism)
+            });
+            let crop_sets: Vec<&[RgbImage]> = detected
+                .iter()
+                .filter_map(|regions| regions.as_ref().ok())
+                .map(|regions| regions.crops.as_slice())
+                .collect();
+            let recognized = self
+                .recognition
+                .run_many(&crop_sets, self.config.rec_batch_size);
+            let mut recognized = recognized.into_iter();
+            for regions in detected {
+                results.push(regions.and_then(|regions| {
+                    let sequences = recognized.next().expect("one result per crop set")?;
+                    Ok(Self::assemble(regions, sequences)?.results)
+                }));
+            }
+        }
+        results
+    }
+
+    /// Orientation, detection and cropping: everything before recognition.
+    fn detect_regions(
+        &self,
+        image: &DynamicImage,
+        parallelism: Parallelism,
+    ) -> Result<DetectedRegions, OcrError> {
         let mut timings = OcrTimings::new();
         let original_dims = image.dimensions();
+        let classify = |classifier: &OrientationClassifier, images: &[RgbImage]| match parallelism {
+            Parallelism::Engine => classifier.classify(images),
+            Parallelism::Outer => classifier.classify_single_threaded(images),
+        };
 
         // Document orientation: rotate the page upright before detection.
         let mut doc_orientation_angle = None;
@@ -587,8 +751,7 @@ impl OcrEngine {
             Some(classifier) => {
                 let start = Instant::now();
                 let rgb = image.to_rgb8();
-                let angle = classifier
-                    .classify(std::slice::from_ref(&rgb))
+                let angle = classify(classifier, std::slice::from_ref(&rgb))
                     .map_err(|source| OcrError::OrientationInference { source })?
                     .first()
                     .map(|prediction| prediction.angle)
@@ -606,17 +769,18 @@ impl OcrEngine {
         };
         let image_dims = image.dimensions();
 
-        let (polygons, detection_timings) = self
-            .detection
-            .detect_polygons_with_timings(image, image_dims)?;
+        let (polygons, detection_timings) =
+            self.detection
+                .detect_polygons_with_timings(image, image_dims, parallelism)?;
         timings.detection = detection_timings;
 
         if polygons.is_empty() {
-            timings.total = pipeline_start.elapsed();
-            return Ok(OcrRunWithMetrics {
-                results: Vec::new(),
+            return Ok(DetectedRegions {
+                polygons,
+                crops: Vec::new(),
                 timings,
                 doc_orientation_angle,
+                original_dims,
             });
         }
 
@@ -633,8 +797,7 @@ impl OcrEngine {
                 // compiled plan serves every call.
                 let mut padded = batch.to_vec();
                 padded.resize(chunk, batch[batch.len() - 1].clone());
-                let predictions = classifier
-                    .classify(&padded)
+                let predictions = classify(classifier, &padded)
                     .map_err(|source| OcrError::OrientationInference { source })?;
                 for (offset, prediction) in predictions.iter().take(batch.len()).enumerate() {
                     if prediction.angle == 180 {
@@ -645,12 +808,30 @@ impl OcrEngine {
             }
             timings.orientation += start.elapsed();
         }
-        let (sequences, mut recognition_timings) = self
-            .recognition
-            .run_with_timings(&crops, self.config.rec_batch_size)?;
-        recognition_timings.preprocess += crop_elapsed;
-        timings.recognition = recognition_timings;
+        // Cropping is reported as part of recognition preprocessing.
+        timings.recognition.preprocess += crop_elapsed;
 
+        Ok(DetectedRegions {
+            polygons,
+            crops,
+            timings,
+            doc_orientation_angle,
+            original_dims,
+        })
+    }
+
+    /// Pairs the recognised text with the detected regions.
+    fn assemble(
+        regions: DetectedRegions,
+        sequences: Vec<DecodedSequence>,
+    ) -> Result<OcrRunWithMetrics, OcrError> {
+        let DetectedRegions {
+            polygons,
+            crops: _,
+            timings,
+            doc_orientation_angle,
+            original_dims,
+        } = regions;
         if sequences.len() != polygons.len() {
             return Err(OcrError::PipelineMismatch {
                 detection_regions: polygons.len(),
@@ -671,14 +852,32 @@ impl OcrEngine {
             })
             .collect();
 
-        timings.total = pipeline_start.elapsed();
-
         Ok(OcrRunWithMetrics {
             results,
             timings,
             doc_orientation_angle,
         })
     }
+}
+
+/// Where an engine call gets its threads from.
+#[derive(Debug, Clone, Copy)]
+enum Parallelism {
+    /// One image at a time: models use the engine's thread pool.
+    Engine,
+    /// Several images already run in parallel on the pool: models run
+    /// single-threaded inside each image.
+    Outer,
+}
+
+/// Output of the stages before recognition for one image.
+#[derive(Debug)]
+struct DetectedRegions {
+    polygons: Vec<Polygon<f64>>,
+    crops: Vec<RgbImage>,
+    timings: OcrTimings,
+    doc_orientation_angle: Option<u32>,
+    original_dims: (u32, u32),
 }
 
 fn unrotate_polygon(polygon: &Polygon<f64>, angle: u32, original_dims: (u32, u32)) -> Polygon<f64> {
@@ -1038,7 +1237,7 @@ impl OcrEngineBuilder {
     /// single-threaded.
     ///
     /// Defaults to [`default_inference_threads`](crate::default_inference_threads):
-    /// the number of logical CPUs capped at 8. Ignored (always 1) on
+    /// the number of logical CPUs capped at 16. Ignored (always 1) on
     /// WebAssembly or when the `multithread` feature is disabled.
     pub fn inference_threads(mut self, threads: usize) -> Self {
         self.inference_threads = Some(threads.max(1));
@@ -1413,16 +1612,18 @@ impl DetectionPipeline {
         &self,
         image: &DynamicImage,
         image_dims: (u32, u32),
+        parallelism: Parallelism,
     ) -> Result<(Vec<Polygon<f64>>, StageTimings), OcrError> {
         let preprocess_start = Instant::now();
         let preprocessed = self.preprocessor.process(image).map_err(OcrError::from)?;
         let preprocess_elapsed = preprocess_start.elapsed();
 
         let inference_start = Instant::now();
-        let inference = self
-            .session
-            .run(&preprocessed)
-            .map_err(|source| OcrError::DetectionInference { source })?;
+        let inference = match parallelism {
+            Parallelism::Engine => self.session.run(&preprocessed),
+            Parallelism::Outer => self.session.run_single_threaded(&preprocessed),
+        }
+        .map_err(|source| OcrError::DetectionInference { source })?;
         let inference_elapsed = inference_start.elapsed();
 
         let post_start = Instant::now();
@@ -1557,6 +1758,72 @@ impl RecognitionPipeline {
 
         let sequences = results.into_iter().flatten().collect();
         Ok((sequences, timings))
+    }
+
+    /// Recognises several images' regions, one result per crop set.
+    ///
+    /// Each set is split into batches exactly as
+    /// [`run_with_timings`](Self::run_with_timings) splits it, so every set
+    /// gets the same results as on its own; the batches of all sets then run
+    /// together. An error only fails the set it belongs to.
+    fn run_many(
+        &self,
+        crop_sets: &[&[RgbImage]],
+        batch_size: usize,
+    ) -> Vec<Result<Vec<DecodedSequence>, OcrError>> {
+        // (set, crop indices) per batch.
+        let mut jobs: Vec<(usize, Vec<usize>)> = Vec::new();
+        for (set, crops) in crop_sets.iter().enumerate() {
+            let mut order: Vec<usize> = (0..crops.len()).collect();
+            order.sort_by(|&a, &b| aspect_ratio(&crops[a]).total_cmp(&aspect_ratio(&crops[b])));
+            jobs.extend(
+                order
+                    .chunks(batch_size.max(1))
+                    .map(|chunk| (set, chunk.to_vec())),
+            );
+        }
+
+        let single_batch = jobs.len() == 1;
+        let decoded = crate::threading::parallel_map(&self.executor, &jobs, |(set, chunk)| {
+            let crops = crop_sets[*set];
+            let batch_crops: Vec<RgbImage> =
+                chunk.iter().map(|&index| crops[index].clone()).collect();
+            let batch = self.preprocessor.process_images(&batch_crops)?;
+            let inference = if single_batch {
+                self.session.run(&batch)
+            } else {
+                self.session.run_single_threaded(&batch)
+            }
+            .map_err(|source| OcrError::RecognitionInference { source })?;
+            let sequences = self.postprocessor.process(&inference)?;
+            if sequences.len() != chunk.len() {
+                return Err(OcrError::PipelineMismatch {
+                    detection_regions: chunk.len(),
+                    recognition_results: sequences.len(),
+                });
+            }
+            Ok(sequences)
+        });
+
+        let mut results: Vec<Result<Vec<Option<DecodedSequence>>, OcrError>> = crop_sets
+            .iter()
+            .map(|crops| Ok(vec![None; crops.len()]))
+            .collect();
+        for ((set, chunk), sequences) in jobs.iter().zip(decoded) {
+            match (sequences, &mut results[*set]) {
+                (Ok(sequences), Ok(slots)) => {
+                    for (&index, sequence) in chunk.iter().zip(sequences) {
+                        slots[index] = Some(sequence);
+                    }
+                }
+                (Err(error), slot @ Ok(_)) => *slot = Err(error),
+                (_, Err(_)) => {}
+            }
+        }
+        results
+            .into_iter()
+            .map(|set| set.map(|slots| slots.into_iter().flatten().collect()))
+            .collect()
     }
 }
 

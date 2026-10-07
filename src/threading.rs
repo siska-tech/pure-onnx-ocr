@@ -14,8 +14,8 @@ pub const MULTITHREAD_SUPPORTED: bool =
     cfg!(all(feature = "multithread", not(target_arch = "wasm32")));
 
 /// Default number of inference threads: the number of logical CPUs, capped
-/// at 8. Larger pools gave no further speed-up in our measurements (see
-/// `docs/devlog/perf/task-perf-001-multithread.md`).
+/// at 16. Recognition runs batches in parallel, so it keeps scaling up to 16
+/// threads (see `docs/devlog/perf/task-perf-003-default-threads.md`).
 pub fn default_inference_threads() -> usize {
     if !MULTITHREAD_SUPPORTED {
         return 1;
@@ -23,7 +23,7 @@ pub fn default_inference_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
-        .clamp(1, 8)
+        .clamp(1, 16)
 }
 
 /// Builds the executor for `threads` worker threads (`<= 1` is

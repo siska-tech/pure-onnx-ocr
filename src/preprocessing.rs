@@ -117,6 +117,18 @@ impl DetPreProcessor {
         Self { config }
     }
 
+    /// Model input `(width, height)` for an image of `width` x `height`.
+    pub(crate) fn resized_dims(&self, width: u32, height: u32) -> (u32, u32) {
+        let (w, h, _) = compute_resized_dims(
+            width,
+            height,
+            self.config.limit_side_len,
+            self.config.limit_type,
+            self.config.max_side_limit,
+        );
+        (w, h)
+    }
+
     /// Resizes and normalizes an image, retaining the scales needed to map
     /// detections back to the original. Returns an error for an empty image.
     pub fn process(
@@ -501,6 +513,12 @@ impl RecPreProcessor {
             valid_widths,
             max_width,
         })
+    }
+
+    /// Width of a batch whose crops all fit the minimum width (most text
+    /// lines): the shape of the recognition plan used most often.
+    pub(crate) fn min_batch_width(&self) -> u32 {
+        self.batch_width(1)
     }
 
     /// Computes the batch tensor width for the widest desired crop width.

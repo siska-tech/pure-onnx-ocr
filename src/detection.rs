@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::onnx_model::PlanCache;
+use crate::onnx_model::SharedPlanCache;
 use crate::preprocessing::PreprocessedDetInput;
 
 /// Default number of compiled detection plans (one per input size) kept in memory.
@@ -26,7 +26,7 @@ pub struct DetInferenceOutput {
 #[derive(Debug)]
 pub struct DetInferenceSession {
     base_model: InferenceModel,
-    cache: std::sync::Mutex<PlanCache<(u32, u32)>>,
+    cache: SharedPlanCache<(u32, u32)>,
     executor: crate::threading::Executor,
 }
 
@@ -62,7 +62,7 @@ impl DetInferenceSession {
         log::debug!("[DetInfer] Detection model prepared");
         Ok(Self {
             base_model: inference_model,
-            cache: std::sync::Mutex::new(PlanCache::new(DEFAULT_DET_PLAN_CACHE)),
+            cache: SharedPlanCache::new(DEFAULT_DET_PLAN_CACHE),
             executor: crate::threading::Executor::SingleThread,
         })
     }
@@ -73,6 +73,24 @@ impl DetInferenceSession {
     /// `resized_dims` must agree with the tensor's width and height.
     /// Model compilation, execution and output conversion errors propagate.
     pub fn run(&self, input: &PreprocessedDetInput) -> TractResult<DetInferenceOutput> {
+        self.run_on(input, &self.executor)
+    }
+
+    /// Runs one image single-threaded. Used when several images already run
+    /// in parallel (see `RecInferenceSession::run_single_threaded` for why
+    /// nesting tract's parallel matrix multiplication there is unsafe).
+    pub(crate) fn run_single_threaded(
+        &self,
+        input: &PreprocessedDetInput,
+    ) -> TractResult<DetInferenceOutput> {
+        self.run_on(input, &crate::threading::Executor::SingleThread)
+    }
+
+    fn run_on(
+        &self,
+        input: &PreprocessedDetInput,
+        executor: &crate::threading::Executor,
+    ) -> TractResult<DetInferenceOutput> {
         log::debug!(
             "[DetInfer] Running inference with input dims {:?}",
             input.tensor.shape()
@@ -81,9 +99,8 @@ impl DetInferenceSession {
         let (width, height) = input.resized_dims;
         let plan = self.runnable_for_dims(width, height)?;
 
-        let outputs = crate::threading::run_with(&self.executor, || {
-            plan.run(tvec!(input.tensor.clone().into()))
-        })?;
+        let outputs =
+            crate::threading::run_with(executor, || plan.run(tvec!(input.tensor.clone().into())))?;
         let output_tensor = outputs
             .into_iter()
             .next()
@@ -113,27 +130,31 @@ impl DetInferenceSession {
     /// Sets how many compiled plans (one per input shape) are kept in memory.
     /// The least recently used plan is dropped when the limit is exceeded.
     pub fn set_plan_cache_capacity(&self, capacity: usize) {
-        crate::onnx_model::lock_cache(&self.cache).set_capacity(capacity);
+        self.cache.set_capacity(capacity);
+    }
+
+    /// Compiles and caches the plan for a `width` x `height` model input.
+    pub(crate) fn prepare_plan(&self, width: u32, height: u32) -> TractResult<()> {
+        self.runnable_for_dims(width, height).map(drop)
     }
 
     /// Returns the number of compiled plans currently cached.
     pub fn cached_plan_count(&self) -> usize {
-        crate::onnx_model::lock_cache(&self.cache).len()
+        self.cache.len()
     }
 
     fn runnable_for_dims(&self, width: u32, height: u32) -> TractResult<Arc<TypedRunnableModel>> {
-        if let Some(plan) = crate::onnx_model::lock_cache(&self.cache).get((width, height)) {
-            return Ok(plan);
-        }
+        self.cache
+            .get_or_compile((width, height), || self.compile(width, height))
+    }
 
+    fn compile(&self, width: u32, height: u32) -> TractResult<Arc<TypedRunnableModel>> {
         log::debug!(
             "[DetInfer] Preparing runnable model for dims ({}, {})",
             width,
             height
         );
 
-        // Compile outside the cache lock so other shapes can run concurrently.
-        // Simultaneous misses may compile the same shape more than once.
         let mut model = self.base_model.clone();
         model.set_input_fact(
             0,
@@ -148,15 +169,11 @@ impl DetInferenceSession {
             ),
         )?;
 
-        let plan = model
+        model
             .into_typed()?
             .into_decluttered()?
             .into_optimized()?
-            .into_runnable()?;
-
-        crate::onnx_model::lock_cache(&self.cache).insert((width, height), Arc::clone(&plan));
-
-        Ok(plan)
+            .into_runnable()
     }
 }
 
