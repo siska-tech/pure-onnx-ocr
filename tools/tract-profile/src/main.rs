@@ -71,21 +71,31 @@ fn main() -> TractResult<()> {
 
     let mut per_node: Vec<f64> = vec![0.0; plan.model().nodes().len()];
     let mut totals = vec![];
+    let mut output_hash = 0u64;
     tract_linalg::multithread::multithread_tract_scope(executor, || -> TractResult<()> {
         for run in 0..runs + 2 {
             let mut state = SimpleState::new(&plan)?;
             let t0 = Instant::now();
             let measure = run >= 2;
-            state.run_plan_with_eval(tvec!(input.clone().into()), |ctx, st, node, inp| {
-                let t = Instant::now();
-                let out = eval(ctx, st, node, inp);
-                if measure {
-                    per_node[node.id] += t.elapsed().as_secs_f64() * 1000.0;
-                }
-                out
-            })?;
+            let outputs =
+                state.run_plan_with_eval(tvec!(input.clone().into()), |ctx, st, node, inp| {
+                    let t = Instant::now();
+                    let out = eval(ctx, st, node, inp);
+                    if measure {
+                        per_node[node.id] += t.elapsed().as_secs_f64() * 1000.0;
+                    }
+                    out
+                })?;
             if measure {
                 totals.push(t0.elapsed().as_secs_f64() * 1000.0);
+            }
+            // FNV-1a over the output's bits: equal hashes mean bit-identical outputs, which
+            // tells whether a tract change altered the arithmetic.
+            output_hash = 0xcbf2_9ce4_8422_2325;
+            for value in outputs[0].to_plain_array_view::<f32>()?.iter() {
+                for byte in value.to_bits().to_le_bytes() {
+                    output_hash = (output_hash ^ byte as u64).wrapping_mul(0x100_0000_01b3);
+                }
             }
         }
         Ok(())
@@ -150,7 +160,7 @@ fn main() -> TractResult<()> {
     let sum: f64 = groups.values().map(|v| v.0).sum();
     let mut rows: Vec<_> = groups.into_iter().collect();
     rows.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap());
-    println!("# {path} [1,3,{h},{w}] threads={threads} runs={runs} total_median={total_med:.1}ms sum_nodes={sum:.1}ms");
+    println!("# {path} [1,3,{h},{w}] threads={threads} runs={runs} total_median={total_med:.1}ms sum_nodes={sum:.1}ms output_hash={output_hash:016x}");
     println!("tract_op\tonnx_op\tnodes\tms\tpct");
     for ((op, onnx), (ms, n)) in rows {
         if ms < 0.05 {

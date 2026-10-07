@@ -27,22 +27,22 @@ CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）
 | `[x]` | [`task-perf-003`](task-perf-003-default-threads.md) | 既定の推論スレッド数の上限を 8 から 16 に引き上げる | 合計 −3〜18%（全モデル）、出力は一致。初回の実行中のメモリのピークが増えたが、007 で解消 |
 | `[x]` | [`task-perf-004`](task-perf-004-det-profile.md) | 検出モデルの演算子ごとのプロファイルと、画像全体を使う演算子の確認 | depthwise が 8 スレッドでも速くならず、検出の 36〜50% を占める。全モデルに画像全体の平均がある |
 | `[ ]` | [`task-perf-005`](task-perf-005-det-tiling.md) | 検出のタイル分割（試作と影響の測定、採用してもオプトイン） | 優先度を下げた。全モデルで出力が一致しない。006 の結果を見て判断 |
-| `[ ]` | [`task-perf-006`](task-perf-006-tract-intraop.md) | tract の depthwise 畳み込みの並列化・SIMD 化と、ConvTranspose のバイアス展開の削除（upstream への PR） | 本命。出力を変えずに small の det 推論を 200 ms 前後にできる見込み |
+| `[~]` | [`task-perf-006`](task-perf-006-tract-intraop.md) | tract の depthwise 畳み込みの SIMD 化と、パックの並列化（upstream への PR） | 実装と計測は完了。tract main + 修正で合計 −29〜43%、出力は一致。small は OpenVINO の約 1.3 倍。PR とリリース待ち |
 | `[x]` | [`task-perf-007`](task-perf-007-warmup.md) | 推論計画を事前にコンパイルする API（`OcrEngine::warmup`）と、同じ計画の重複コンパイルの排除 | 重複コンパイルをなくし、初回 −10〜23%、ピークメモリは上限 8 の水準に戻った。warmup で初回がさらに −16〜33% |
 | `[ ]` | [`task-perf-008`](task-perf-008-run-many.md) | 複数の画像をまとめて処理する API（スループット向け） | 画像をまたいで検出を並列に実行する |
 
 進める順番:
 
 1. task-perf-002 → task-perf-003 → task-perf-004（完了）
-2. task-perf-007（完了）→ task-perf-006（depthwise から）。task-perf-005 は 006 の結果を見て判断する。
+2. task-perf-007（完了）→ task-perf-006（実装と計測は完了。tract への PR とリリース待ち）。task-perf-005 は不要になる見込み（006 で目標に届いた）。
 3. task-perf-008
 
 出力を変えないタスク（003、006、007、008）だけで見込める到達点:
 
-- ウォームアップ後の時間は、small で OpenVINO の約 1.4 倍（task-perf-004 の見積もり。下記）。
+- ウォームアップ後の時間は、small で OpenVINO の約 1.3 倍（task-perf-006 の実測。tract のリリース待ち）。
 - 初回の実行と、複数画像のスループットは、OpenVINO と同程度。
 
-task-perf-004 の見積もりでは、task-perf-006 で small の det 推論が 200 ms 前後になれば、small（搭乗券）は約 0.8 秒、OpenVINO の約 1.4 倍になる。1 枚あたりの時間の目標（1.5 倍以下）は、タイル分割なしで届く見込みである。
+task-perf-006 の実測（修正版の tract）では、small（搭乗券）は 0.77 秒で OpenVINO の約 1.32 倍、medium（搭乗券）は 2.74 秒で約 1.11 倍になった。1 枚あたりの時間の目標（1.5 倍以下）は、タイル分割なしで届く。本クレートに反映できるのは、tract の次のリリースの後である。
 
 ## 🔭 Follow-ups
 
