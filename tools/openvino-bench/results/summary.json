@@ -1,0 +1,1445 @@
+{
+ "environment": {
+  "date": "2026-10-07 09:42:24",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "13th Gen Intel(R) Core(TM) i7-1360P",
+  "power_plan": "電源設定の GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (バランス)",
+  "battery_status": "2",
+  "openvino_python": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "crate_commit": "de05070",
+  "models": {
+   "v6-small/det": {
+    "path": "C:\\Users\\Shion\\Documents\\Projects\\benchmark-vino-pure\\pure-onnx-ocr\\tests\\fixtures\\models\\ppocrv6\\small_det\\inference.onnx",
+    "bytes": 9880512,
+    "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+   },
+   "v6-small/rec": {
+    "path": "C:\\Users\\Shion\\Documents\\Projects\\benchmark-vino-pure\\pure-onnx-ocr\\tests\\fixtures\\models\\ppocrv6\\small_rec\\inference.onnx",
+    "bytes": 21159378,
+    "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+   },
+   "v6-medium/det": {
+    "path": "C:\\Users\\Shion\\Documents\\Projects\\benchmark-vino-pure\\pure-onnx-ocr\\tests\\fixtures\\models\\ppocrv6\\medium_det\\inference.onnx",
+    "bytes": 62032837,
+    "sha256": "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1"
+   },
+   "v6-medium/rec": {
+    "path": "C:\\Users\\Shion\\Documents\\Projects\\benchmark-vino-pure\\pure-onnx-ocr\\tests\\fixtures\\models\\ppocrv6\\medium_rec\\inference.onnx",
+    "bytes": 76554979,
+    "sha256": "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba"
+   },
+   "v6-tiny/det": {
+    "path": "C:\\Users\\Shion\\Documents\\Projects\\benchmark-vino-pure\\pure-onnx-ocr\\tests\\fixtures\\models\\ppocrv6\\tiny_det\\inference.onnx",
+    "bytes": 1780590,
+    "sha256": "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8"
+   },
+   "v6-tiny/rec": {
+    "path": "C:\\Users\\Shion\\Documents\\Projects\\benchmark-vino-pure\\pure-onnx-ocr\\tests\\fixtures\\models\\ppocrv6\\tiny_rec\\inference.onnx",
+    "bytes": 4462639,
+    "sha256": "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6"
+   }
+  },
+  "images": [
+   "general_ocr_002.jpg",
+   "ja.jpg"
+  ],
+  "rounds": 5,
+  "warm_runs_per_process": 5,
+  "configs": {
+   "pure": [
+    "--backend",
+    "pure"
+   ],
+   "ov": [
+    "--backend",
+    "ov",
+    "--ov-rec-hint",
+    "THROUGHPUT",
+    "--ov-rec-requests",
+    "0"
+   ],
+   "ov-latency": [
+    "--backend",
+    "ov",
+    "--ov-rec-hint",
+    "LATENCY",
+    "--ov-rec-requests",
+    "1"
+   ]
+  }
+ },
+ "models": [
+  "v6-small",
+  "v6-medium",
+  "v6-tiny"
+ ],
+ "aggregate": {
+  "pure/v6-small": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 31,
+     "warm_n": 25,
+     "warm": {
+      "total": 1372.6922,
+      "det_pre": 15.2142,
+      "det_inf": 557.3095999999999,
+      "det_post": 4.5156,
+      "rec_pre": 9.7623,
+      "rec_inf": 742.7269,
+      "rec_post": 30.2166
+     },
+     "warm_min_total": 1094.2920000000001,
+     "warm_max_total": 1830.74,
+     "first": {
+      "total": 2259.688,
+      "det_pre": 12.3619,
+      "det_inf": 941.3389,
+      "det_post": 4.4614,
+      "rec_pre": 10.3202,
+      "rec_inf": 1279.236,
+      "rec_post": 28.7825
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 1535.0199,
+      "det_pre": 24.7201,
+      "det_inf": 570.4949,
+      "det_post": 5.7339,
+      "rec_pre": 29.0831,
+      "rec_inf": 858.0074,
+      "rec_post": 39.8962
+     },
+     "warm_min_total": 1227.2177,
+     "warm_max_total": 1847.0946000000001,
+     "first": {
+      "total": 1995.1321,
+      "det_pre": 24.245099999999997,
+      "det_inf": 922.8467,
+      "det_post": 5.3688,
+      "rec_pre": 24.7846,
+      "rec_inf": 962.8709,
+      "rec_post": 34.5077
+     }
+    }
+   },
+   "load_ms": 93.85839999999999,
+   "images_per_s": 0.6953043476108449,
+   "avg_cores_busy": 4.332615216050077,
+   "threads_after_load": 12,
+   "threads_after_pipeline": 28,
+   "peak_working_set_mb": 412.16796875,
+   "peak_working_set_mb_max": 414.9140625,
+   "peak_private_mb": 404.30078125,
+   "peak_private_mb_max": 406.59765625,
+   "ws_after_load_mb": 44.078125,
+   "model_only_det_ms": 525.2296,
+   "model_only_rec8_ms": 650.378,
+   "model_only_rec1_ms": 42.017199999999995,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "pure": {
+     "default_inference_threads": 8,
+     "inference_threads": 8,
+     "multithread_supported": true
+    },
+    "config_matches_engine": true,
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "ov/v6-small": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 31,
+     "warm_n": 25,
+     "warm": {
+      "total": 584.6354,
+      "det_pre": 16.828599999999998,
+      "det_inf": 88.06519999999999,
+      "det_post": 5.7029000000000005,
+      "rec_pre": 11.8345,
+      "rec_inf": 399.04659999999996,
+      "rec_post": 39.7596
+     },
+     "warm_min_total": 510.3233,
+     "warm_max_total": 722.5243999999999,
+     "first": {
+      "total": 667.2314,
+      "det_pre": 13.8911,
+      "det_inf": 147.88750000000002,
+      "det_post": 5.263,
+      "rec_pre": 12.4312,
+      "rec_inf": 444.6561,
+      "rec_post": 37.706900000000005
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 791.2956,
+      "det_pre": 33.3399,
+      "det_inf": 91.5171,
+      "det_post": 7.7476,
+      "rec_pre": 35.2254,
+      "rec_inf": 581.8522,
+      "rec_post": 48.480599999999995
+     },
+     "warm_min_total": 737.2759,
+     "warm_max_total": 940.975,
+     "first": {
+      "total": 858.0166,
+      "det_pre": 30.6283,
+      "det_inf": 139.2117,
+      "det_post": 8.206,
+      "rec_pre": 35.5505,
+      "rec_inf": 600.5346000000001,
+      "rec_post": 45.0895
+     }
+    }
+   },
+   "load_ms": 746.6888,
+   "images_per_s": 1.4482121437309423,
+   "avg_cores_busy": 8.48914209069789,
+   "threads_after_load": 31,
+   "threads_after_pipeline": 50,
+   "peak_working_set_mb": 647.8125,
+   "peak_working_set_mb_max": 661.76953125,
+   "peak_private_mb": 973.53125,
+   "peak_private_mb_max": 985.6171875,
+   "ws_after_load_mb": 116.23046875,
+   "model_only_det_ms": 88.1646,
+   "model_only_rec8_ms": 115.3977,
+   "model_only_rec1_ms": 20.7352,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "openvino": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "preprocess_threads": 8,
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "YES",
+      "INFERENCE_NUM_THREADS": "16",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "4",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "4",
+      "PERFORMANCE_HINT": "THROUGHPUT",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec_requests": 4
+    },
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "ov-latency/v6-small": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 31,
+     "warm_n": 25,
+     "warm": {
+      "total": 833.9584,
+      "det_pre": 14.725800000000001,
+      "det_inf": 78.36070000000001,
+      "det_post": 5.1869000000000005,
+      "rec_pre": 11.142000000000001,
+      "rec_inf": 685.385,
+      "rec_post": 35.0158
+     },
+     "warm_min_total": 683.1519000000001,
+     "warm_max_total": 1008.7492,
+     "first": {
+      "total": 992.2079,
+      "det_pre": 12.8498,
+      "det_inf": 150.39069999999998,
+      "det_post": 5.3094,
+      "rec_pre": 13.084,
+      "rec_inf": 776.6599,
+      "rec_post": 33.844899999999996
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 1259.9104,
+      "det_pre": 28.3445,
+      "det_inf": 83.41170000000001,
+      "det_post": 6.8039,
+      "rec_pre": 32.9848,
+      "rec_inf": 1069.5129000000002,
+      "rec_post": 38.684799999999996
+     },
+     "warm_min_total": 1032.3356999999999,
+     "warm_max_total": 1621.9139999999998,
+     "first": {
+      "total": 1377.9583,
+      "det_pre": 28.0087,
+      "det_inf": 133.01170000000002,
+      "det_post": 6.9558,
+      "rec_pre": 33.6267,
+      "rec_inf": 1135.7730999999999,
+      "rec_post": 38.739799999999995
+     }
+    }
+   },
+   "load_ms": 628.9991,
+   "images_per_s": 0.9681888764547619,
+   "avg_cores_busy": 5.891419284087825,
+   "threads_after_load": 27,
+   "threads_after_pipeline": 47,
+   "peak_working_set_mb": 519.17578125,
+   "peak_working_set_mb_max": 520.4609375,
+   "peak_private_mb": 797.6875,
+   "peak_private_mb_max": 798.02734375,
+   "ws_after_load_mb": 94.6171875,
+   "model_only_det_ms": 78.8879,
+   "model_only_rec8_ms": 111.6795,
+   "model_only_rec1_ms": 19.3072,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "openvino": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "preprocess_threads": 8,
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec_requests": 1
+    },
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "pure/v6-medium": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 33,
+     "warm_n": 25,
+     "warm": {
+      "total": 4985.5802,
+      "det_pre": 13.1732,
+      "det_inf": 2084.1802000000002,
+      "det_post": 4.2505,
+      "rec_pre": 8.240300000000001,
+      "rec_inf": 2853.0768000000003,
+      "rec_post": 28.9453
+     },
+     "warm_min_total": 4310.1825,
+     "warm_max_total": 6961.4544,
+     "first": {
+      "total": 6898.0096,
+      "det_pre": 12.223899999999999,
+      "det_inf": 2905.596,
+      "det_post": 4.398499999999999,
+      "rec_pre": 9.0869,
+      "rec_inf": 3934.1049,
+      "rec_post": 29.0359
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 5798.8739000000005,
+      "det_pre": 23.3116,
+      "det_inf": 2248.9191,
+      "det_post": 5.6569,
+      "rec_pre": 25.8454,
+      "rec_inf": 3415.2693,
+      "rec_post": 35.9445
+     },
+     "warm_min_total": 4936.5858,
+     "warm_max_total": 7921.2532,
+     "first": {
+      "total": 6349.6947,
+      "det_pre": 22.5521,
+      "det_inf": 2866.5582,
+      "det_post": 5.5318,
+      "rec_pre": 28.405,
+      "rec_inf": 3409.1187,
+      "rec_post": 38.5908
+     }
+    }
+   },
+   "load_ms": 244.9546,
+   "images_per_s": 0.1891215563560281,
+   "avg_cores_busy": 4.764976712876489,
+   "threads_after_load": 12,
+   "threads_after_pipeline": 25,
+   "peak_working_set_mb": 1040.19921875,
+   "peak_working_set_mb_max": 1047.0390625,
+   "peak_private_mb": 1033.140625,
+   "peak_private_mb_max": 1040.22265625,
+   "ws_after_load_mb": 147.28515625,
+   "model_only_det_ms": 2166.7199,
+   "model_only_rec8_ms": 1774.3144,
+   "model_only_rec1_ms": 125.04560000000001,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "pure": {
+     "default_inference_threads": 8,
+     "inference_threads": 8,
+     "multithread_supported": true
+    },
+    "config_matches_engine": true,
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "ov/v6-medium": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 33,
+     "warm_n": 25,
+     "warm": {
+      "total": 2466.1569,
+      "det_pre": 15.5763,
+      "det_inf": 431.5582,
+      "det_post": 5.752,
+      "rec_pre": 11.7036,
+      "rec_inf": 1883.306,
+      "rec_post": 38.495599999999996
+     },
+     "warm_min_total": 2120.8535,
+     "warm_max_total": 4072.0508000000004,
+     "first": {
+      "total": 2566.4816,
+      "det_pre": 12.6894,
+      "det_inf": 548.1297000000001,
+      "det_post": 5.7401,
+      "rec_pre": 13.0869,
+      "rec_inf": 1951.0116,
+      "rec_post": 35.7349
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 3226.7644999999998,
+      "det_pre": 29.2584,
+      "det_inf": 460.6327,
+      "det_post": 7.6568000000000005,
+      "rec_pre": 35.4364,
+      "rec_inf": 2632.9542,
+      "rec_post": 44.4867
+     },
+     "warm_min_total": 2866.4264,
+     "warm_max_total": 5458.6422,
+     "first": {
+      "total": 3253.0881,
+      "det_pre": 26.3246,
+      "det_inf": 527.8279,
+      "det_post": 7.4422999999999995,
+      "rec_pre": 36.4709,
+      "rec_inf": 2636.6407999999997,
+      "rec_post": 44.6235
+     }
+    }
+   },
+   "load_ms": 863.0843,
+   "images_per_s": 0.33743629548613424,
+   "avg_cores_busy": 10.36667569038808,
+   "threads_after_load": 31,
+   "threads_after_pipeline": 47,
+   "peak_working_set_mb": 1046.4140625,
+   "peak_working_set_mb_max": 1058.65625,
+   "peak_private_mb": 1781.1484375,
+   "peak_private_mb_max": 1785.94140625,
+   "ws_after_load_mb": 229.546875,
+   "model_only_det_ms": 431.9094,
+   "model_only_rec8_ms": 483.2909,
+   "model_only_rec1_ms": 75.9953,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "openvino": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "preprocess_threads": 8,
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "YES",
+      "INFERENCE_NUM_THREADS": "16",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "4",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "4",
+      "PERFORMANCE_HINT": "THROUGHPUT",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec_requests": 4
+    },
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "ov-latency/v6-medium": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 33,
+     "warm_n": 25,
+     "warm": {
+      "total": 3139.8267,
+      "det_pre": 15.0594,
+      "det_inf": 421.2471,
+      "det_post": 5.7279,
+      "rec_pre": 11.3763,
+      "rec_inf": 2651.7628000000004,
+      "rec_post": 38.6607
+     },
+     "warm_min_total": 2529.7748,
+     "warm_max_total": 5418.1431,
+     "first": {
+      "total": 3629.3842,
+      "det_pre": 12.3591,
+      "det_inf": 569.1015,
+      "det_post": 6.6172,
+      "rec_pre": 12.956199999999999,
+      "rec_inf": 2951.2056,
+      "rec_post": 37.3365
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 4677.1488,
+      "det_pre": 29.3675,
+      "det_inf": 448.5119,
+      "det_post": 7.5075,
+      "rec_pre": 34.7665,
+      "rec_inf": 4058.2383,
+      "rec_post": 41.9065
+     },
+     "warm_min_total": 3812.4796,
+     "warm_max_total": 6142.4619,
+     "first": {
+      "total": 4554.361,
+      "det_pre": 29.1588,
+      "det_inf": 519.104,
+      "det_post": 7.2075000000000005,
+      "rec_pre": 35.6406,
+      "rec_inf": 3881.6701,
+      "rec_post": 41.5725
+     }
+    }
+   },
+   "load_ms": 843.3517,
+   "images_per_s": 0.25110017533019524,
+   "avg_cores_busy": 6.739293299448068,
+   "threads_after_load": 27,
+   "threads_after_pipeline": 47,
+   "peak_working_set_mb": 911.3828125,
+   "peak_working_set_mb_max": 911.72265625,
+   "peak_private_mb": 1664.35546875,
+   "peak_private_mb_max": 1664.55859375,
+   "ws_after_load_mb": 206.8359375,
+   "model_only_det_ms": 453.20680000000004,
+   "model_only_rec8_ms": 486.2894,
+   "model_only_rec1_ms": 75.31259999999999,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "openvino": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "preprocess_threads": 8,
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec_requests": 1
+    },
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "pure/v6-tiny": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 34,
+     "warm_n": 25,
+     "warm": {
+      "total": 485.53360000000004,
+      "det_pre": 15.2304,
+      "det_inf": 299.2186,
+      "det_post": 4.4178999999999995,
+      "rec_pre": 9.4292,
+      "rec_inf": 142.5601,
+      "rec_post": 12.9973
+     },
+     "warm_min_total": 410.8697,
+     "warm_max_total": 893.4461,
+     "first": {
+      "total": 1016.9562999999999,
+      "det_pre": 13.011999999999999,
+      "det_inf": 555.2091,
+      "det_post": 4.5027,
+      "rec_pre": 9.5899,
+      "rec_inf": 387.6126,
+      "rec_post": 14.1848
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 549.4463000000001,
+      "det_pre": 27.217399999999998,
+      "det_inf": 312.2423,
+      "det_post": 5.7832,
+      "rec_pre": 27.8432,
+      "rec_inf": 154.8356,
+      "rec_post": 14.3827
+     },
+     "warm_min_total": 455.743,
+     "warm_max_total": 1029.6689000000001,
+     "first": {
+      "total": 860.193,
+      "det_pre": 28.2712,
+      "det_inf": 615.7272,
+      "det_post": 6.4355,
+      "rec_pre": 28.3065,
+      "rec_inf": 165.406,
+      "rec_post": 15.2912
+     }
+    }
+   },
+   "load_ms": 40.306000000000004,
+   "images_per_s": 1.9369155514697827,
+   "avg_cores_busy": 3.229201395966028,
+   "threads_after_load": 12,
+   "threads_after_pipeline": 28,
+   "peak_working_set_mb": 159.87890625,
+   "peak_working_set_mb_max": 160.265625,
+   "peak_private_mb": 150.92578125,
+   "peak_private_mb_max": 152.125,
+   "ws_after_load_mb": 18.03125,
+   "model_only_det_ms": 275.18039999999996,
+   "model_only_rec8_ms": 186.0241,
+   "model_only_rec1_ms": 12.1535,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "pure": {
+     "default_inference_threads": 8,
+     "inference_threads": 8,
+     "multithread_supported": true
+    },
+    "config_matches_engine": true,
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "ov/v6-tiny": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 34,
+     "warm_n": 25,
+     "warm": {
+      "total": 179.6585,
+      "det_pre": 15.8123,
+      "det_inf": 41.0701,
+      "det_post": 5.505000000000001,
+      "rec_pre": 11.193,
+      "rec_inf": 88.65979999999999,
+      "rec_post": 14.3076
+     },
+     "warm_min_total": 153.2645,
+     "warm_max_total": 205.9132,
+     "first": {
+      "total": 266.053,
+      "det_pre": 13.4642,
+      "det_inf": 90.68560000000001,
+      "det_post": 4.8355999999999995,
+      "rec_pre": 11.0968,
+      "rec_inf": 132.4566,
+      "rec_post": 13.5252
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 252.2414,
+      "det_pre": 29.5849,
+      "det_inf": 43.7736,
+      "det_post": 7.132099999999999,
+      "rec_pre": 33.5668,
+      "rec_inf": 122.3963,
+      "rec_post": 14.6569
+     },
+     "warm_min_total": 215.5051,
+     "warm_max_total": 284.0213,
+     "first": {
+      "total": 292.1532,
+      "det_pre": 29.0732,
+      "det_inf": 86.9482,
+      "det_post": 7.329300000000001,
+      "rec_pre": 34.7759,
+      "rec_inf": 117.22739999999999,
+      "rec_post": 14.5794
+     }
+    }
+   },
+   "load_ms": 447.8917,
+   "images_per_s": 4.452474333489081,
+   "avg_cores_busy": 7.083750330102765,
+   "threads_after_load": 31,
+   "threads_after_pipeline": 50,
+   "peak_working_set_mb": 339.59375,
+   "peak_working_set_mb_max": 342.42578125,
+   "peak_private_mb": 558.58984375,
+   "peak_private_mb_max": 562.33203125,
+   "ws_after_load_mb": 63.359375,
+   "model_only_det_ms": 33.8807,
+   "model_only_rec8_ms": 25.2122,
+   "model_only_rec1_ms": 4.2868,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "openvino": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "preprocess_threads": 8,
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "YES",
+      "INFERENCE_NUM_THREADS": "16",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "4",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "4",
+      "PERFORMANCE_HINT": "THROUGHPUT",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec_requests": 4
+    },
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  },
+  "ov-latency/v6-tiny": {
+   "images": {
+    "general_ocr_002.jpg": {
+     "regions": 34,
+     "warm_n": 25,
+     "warm": {
+      "total": 280.05600000000004,
+      "det_pre": 15.1716,
+      "det_inf": 41.1056,
+      "det_post": 5.268400000000001,
+      "rec_pre": 10.8696,
+      "rec_inf": 194.4798,
+      "rec_post": 13.443200000000001
+     },
+     "warm_min_total": 223.23950000000002,
+     "warm_max_total": 484.0493,
+     "first": {
+      "total": 433.1417,
+      "det_pre": 13.332699999999999,
+      "det_inf": 93.7414,
+      "det_post": 5.074000000000001,
+      "rec_pre": 11.2639,
+      "rec_inf": 296.8906,
+      "rec_post": 12.7776
+     }
+    },
+    "ja.jpg": {
+     "regions": 55,
+     "warm_n": 25,
+     "warm": {
+      "total": 414.32039999999995,
+      "det_pre": 28.9771,
+      "det_inf": 42.6297,
+      "det_post": 6.9925,
+      "rec_pre": 32.0226,
+      "rec_inf": 284.3233,
+      "rec_post": 13.811800000000002
+     },
+     "warm_min_total": 323.7531,
+     "warm_max_total": 699.0501,
+     "first": {
+      "total": 441.2359,
+      "det_pre": 27.8056,
+      "det_inf": 79.8719,
+      "det_post": 6.6208,
+      "rec_pre": 32.9484,
+      "rec_inf": 278.89439999999996,
+      "rec_post": 13.8294
+     }
+    }
+   },
+   "load_ms": 448.6446,
+   "images_per_s": 2.8264642526325403,
+   "avg_cores_busy": 6.262614397089654,
+   "threads_after_load": 27,
+   "threads_after_pipeline": 45,
+   "peak_working_set_mb": 290.7578125,
+   "peak_working_set_mb_max": 291.5234375,
+   "peak_private_mb": 517.88671875,
+   "peak_private_mb_max": 518.0546875,
+   "ws_after_load_mb": 54.109375,
+   "model_only_det_ms": 38.7522,
+   "model_only_rec8_ms": 25.1655,
+   "model_only_rec1_ms": 5.3392,
+   "model_only_shapes": {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ]
+   },
+   "settings": {
+    "openvino": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "preprocess_threads": 8,
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "12",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec_requests": 1
+    },
+    "power_throttling_opt_out": true,
+    "priority": "high"
+   }
+  }
+ },
+ "parity": {
+  "v6-small": {
+   "general_ocr_002.jpg": {
+    "regions": [
+     31,
+     31
+    ],
+    "same_text": 31,
+    "same_box": 31
+   },
+   "ja.jpg": {
+    "regions": [
+     55,
+     55
+    ],
+    "same_text": 55,
+    "same_box": 55
+   }
+  },
+  "v6-medium": {
+   "general_ocr_002.jpg": {
+    "regions": [
+     33,
+     33
+    ],
+    "same_text": 33,
+    "same_box": 33
+   },
+   "ja.jpg": {
+    "regions": [
+     55,
+     55
+    ],
+    "same_text": 55,
+    "same_box": 55
+   }
+  },
+  "v6-tiny": {
+   "general_ocr_002.jpg": {
+    "regions": [
+     34,
+     34
+    ],
+    "same_text": 34,
+    "same_box": 34
+   },
+   "ja.jpg": {
+    "regions": [
+     55,
+     55
+    ],
+    "same_text": 55,
+    "same_box": 55
+   }
+  }
+ },
+ "single_thread": {
+  "v6-small": [
+   {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "det_median_ms": 675.0363,
+    "det_ms": [
+     670.4377999999999,
+     675.0363,
+     664.866,
+     683.9456,
+     729.0297
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ],
+    "rec1_median_ms": 56.9112,
+    "rec1_ms": [
+     56.9112,
+     58.2667,
+     60.9218,
+     55.0255,
+     55.8273
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec8_median_ms": 811.0378999999999,
+    "rec8_ms": [
+     811.0378999999999,
+     825.7246,
+     810.5552,
+     803.5232,
+     831.1641
+    ],
+    "settings": {
+     "inference_threads": 1
+    }
+   },
+   {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "det_median_ms": 173.8101,
+    "det_ms": [
+     171.26420000000002,
+     174.5085,
+     173.8101,
+     171.4468,
+     185.2897
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ],
+    "rec1_median_ms": 31.3494,
+    "rec1_ms": [
+     31.9464,
+     31.143400000000003,
+     31.3494,
+     31.2183,
+     31.5241
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec8_median_ms": 247.94830000000002,
+    "rec8_ms": [
+     248.2597,
+     247.94830000000002,
+     252.37159999999997,
+     246.7658,
+     246.32999999999998
+    ],
+    "settings": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "1",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "1",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     }
+    }
+   }
+  ],
+  "v6-medium": [
+   {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "det_median_ms": 2805.0355,
+    "det_ms": [
+     2761.0072,
+     2535.7373000000002,
+     2805.0355,
+     2864.4965,
+     2951.1228
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ],
+    "rec1_median_ms": 209.3843,
+    "rec1_ms": [
+     209.3843,
+     207.5361,
+     204.6746,
+     214.31910000000002,
+     211.835
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec8_median_ms": 2484.8818,
+    "rec8_ms": [
+     2443.7760000000003,
+     2564.0902,
+     2575.6373999999996,
+     2454.6815,
+     2484.8818
+    ],
+    "settings": {
+     "inference_threads": 1
+    }
+   },
+   {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "det_median_ms": 1095.7189999999998,
+    "det_ms": [
+     1119.8315,
+     1095.7189999999998,
+     1111.1524,
+     1087.9132,
+     1091.6018000000001
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ],
+    "rec1_median_ms": 149.3079,
+    "rec1_ms": [
+     136.48489999999998,
+     144.1519,
+     149.3079,
+     152.3795,
+     152.10770000000002
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec8_median_ms": 1222.1856,
+    "rec8_ms": [
+     1199.7481,
+     1214.7585000000001,
+     1223.4965,
+     1222.1856,
+     1224.4433999999999
+    ],
+    "settings": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "1",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "1",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     }
+    }
+   }
+  ],
+  "v6-tiny": [
+   {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "det_median_ms": 338.2844,
+    "det_ms": [
+     348.08099999999996,
+     338.2844,
+     338.1232,
+     334.67449999999997,
+     342.7321
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ],
+    "rec1_median_ms": 10.519499999999999,
+    "rec1_ms": [
+     10.7962,
+     10.6222,
+     10.4307,
+     10.354099999999999,
+     10.519499999999999
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec8_median_ms": 209.2163,
+    "rec8_ms": [
+     209.2163,
+     205.1231,
+     211.0915,
+     211.9238,
+     208.0872
+    ],
+    "settings": {
+     "inference_threads": 1
+    }
+   },
+   {
+    "det_input": [
+     1,
+     3,
+     512,
+     896
+    ],
+    "det_median_ms": 70.6434,
+    "det_ms": [
+     69.8548,
+     71.6716,
+     72.5057,
+     70.6434,
+     70.55590000000001
+    ],
+    "rec1_input": [
+     1,
+     3,
+     48,
+     320
+    ],
+    "rec1_median_ms": 6.514,
+    "rec1_ms": [
+     6.5923,
+     6.5112,
+     6.5108,
+     6.5655,
+     6.514
+    ],
+    "rec8_input": [
+     8,
+     3,
+     48,
+     320
+    ],
+    "rec8_median_ms": 48.6685,
+    "rec8_ms": [
+     48.0125,
+     49.5894,
+     50.5696,
+     48.6685,
+     47.7813
+    ],
+    "settings": {
+     "det": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "1",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     },
+     "rec": {
+      "ENABLE_CPU_PINNING": "NO",
+      "ENABLE_HYPER_THREADING": "NO",
+      "INFERENCE_NUM_THREADS": "1",
+      "INFERENCE_PRECISION_HINT": "f32",
+      "NUM_STREAMS": "1",
+      "OPTIMAL_NUMBER_OF_INFER_REQUESTS": "1",
+      "PERFORMANCE_HINT": "LATENCY",
+      "SCHEDULING_CORE_TYPE": "ANY_CORE"
+     }
+    }
+   }
+  ]
+ }
+}

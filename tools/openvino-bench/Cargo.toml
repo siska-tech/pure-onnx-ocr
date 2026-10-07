@@ -1,0 +1,23 @@
+[package]
+name = "openvino-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Compares pure-onnx-ocr (tract) with OpenVINO Runtime on the same ONNX models, images and pre/post-processing."
+
+# Standalone workspace: keeps the parent crate's workspace (and its build)
+# untouched. Release settings are Cargo's defaults, the same as
+# `cargo run --release --example ocr_bench` in the parent crate.
+[workspace]
+
+[dependencies]
+pure-onnx-ocr = { path = "../.." }
+# OpenVINO C API, loaded at run time from openvino_c.dll (see README.md).
+openvino = { version = "0.11", features = ["runtime-linking"] }
+ndarray = "0.17"
+image = "0.25"
+rayon = "1"
+serde_json = "1"
+anyhow = "1"
+# Same pin as pure-onnx-ocr (Polygon coordinates).
+geo-types = "=0.7.12"
