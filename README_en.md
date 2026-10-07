@@ -2,7 +2,7 @@
 
 Author: Shion Watanabe  
 First version: 2025-11-09  
-Revised: 2026-10-03 (v0.2.1)
+Revised: 2026-10-08 (includes unreleased changes after v0.2.1)
 Repository: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CTC recognition models without relying on C/C++ runtimes. **PP-OCRv5 and PP-OCRv6 (tiny / small / medium) ONNX exports are supported.** The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
@@ -44,11 +44,13 @@ for kind in det rec; do
 done
 ```
 
-| Tier | Notes | CPU time per 896x528 image (Core i7-1360P, 8 threads) |
+| Tier | Notes | CPU time per 896x528 image (Core i7-1360P, 16 threads, after the first run) |
 | :--- | :--- | :--- |
-| `tiny` | Smallest. 6,904-character dictionary **without hiragana/katakana, so it cannot read Japanese** | ~0.5 s |
-| `small` | 50 languages including Japanese. Good balance | ~1.3 s |
-| `medium` | 50 languages. Most accurate (PaddleOCR 3.x default) | ~4.5 s |
+| `tiny` | Smallest. 6,904-character dictionary **without hiragana/katakana, so it cannot read Japanese** | ~0.4 s |
+| `small` | 50 languages including Japanese. Good balance | ~1.1 s |
+| `medium` | 50 languages. Most accurate (PaddleOCR 3.x default) | ~4.1 s |
+
+See [Performance](#performance) for many-image throughput and a comparison with OpenVINO.
 
 ### PP-OCRv5
 
@@ -102,6 +104,42 @@ fn main() -> Result<(), pure_onnx_ocr::OcrError> {
     }
 
     Ok(())
+}
+```
+
+## Performance
+
+Measured on a Core i7-1360P (16 threads) with PP-OCRv6 and tract 0.23.8, and compared with OpenVINO Runtime 2026.4.1 on the same PC, ONNX files and pre/post-processing. Every setup produced exactly the same output as OpenVINO.
+
+| Usage | tiny | small | medium |
+| :--- | ---: | ---: | ---: |
+| One image at a time (896x528, after the first run) | ~0.4 s | ~1.1 s | ~4.1 s |
+| Many images (`run_many_from_images`, 16 images) | 5.3 img/s | 1.5 img/s | 0.34 img/s |
+| Same, relative to OpenVINO's fastest setup | 64% | 67% | 81% |
+
+- With many images, peak memory is 23-65% of OpenVINO's.
+- With improvements headed for the next tract release (including proposed fixes such as [sonos/tract#2976](https://github.com/sonos/tract/pull/2976)), many-image throughput reaches 79-99% of OpenVINO (medium on par).
+- Details: [benchmark-openvino.md](docs/devlog/perf/benchmark-openvino.md) (one image at a time) and [benchmark-openvino-throughput.md](docs/devlog/perf/benchmark-openvino-throughput.md) (many images), both in Japanese. The tool lives in `tools/openvino-bench`.
+
+Getting the most out of it:
+
+- **Process several images with `run_many_from_paths` / `run_many_from_images`.** It is 1.5-2.4x faster than a `run_*` call per image with identical results, at 2.5-3.7x the peak memory while it runs.
+- **Call `warmup(width, height)` at startup in servers.** Inference plans compile per input shape on first use, which slows the first image down; warming up makes the first image of that size 16-33% faster.
+- Reuse the `OcrEngine`: it owns the loaded models and the compiled-plan cache.
+
+```rust
+let engine = OcrEngineBuilder::new()
+    .det_model_dir("models/ppocrv6/small_det")
+    .rec_model_dir("models/ppocrv6/small_rec")
+    .build()?;
+engine.warmup(1280, 720)?; // compile the plans for a common image size up front
+
+let paths = ["a.jpg", "b.jpg", "c.jpg"];
+for (path, results) in paths.iter().zip(engine.run_many_from_paths(&paths)) {
+    match results {
+        Ok(results) => println!("{path}: {} regions", results.len()),
+        Err(error) => eprintln!("{path}: {error}"), // one failure does not stop the others
+    }
 }
 ```
 
@@ -160,7 +198,7 @@ The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LC
 
 > **Known limitations:**
 > - Inference uses as many threads as logical CPUs (at most 16) by default; `inference_threads(1)` runs single-threaded. Browsers (WebAssembly) always run single-threaded.
-> - PP-OCRv6 medium takes about 4.5 s per image on CPU (tract, 8 threads). Prefer tiny or small when speed matters. See `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` for a comparison with PP-OCRv5.
+> - PP-OCRv6 medium takes about 4.1 s per image on CPU (tract, 16 threads). Prefer tiny or small when speed matters. See `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` for a comparison with PP-OCRv5.
 > - Text-line flip correction can miss short all-uppercase lines such as `TAIYUAN`.
 > - Document unwarping (UVDoc) and layout analysis are not supported.
 >
@@ -212,7 +250,7 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 | ------------------ | ------------------------------------------------------------------------------------------------------------- |
 | `OcrEngineBuilder` | Configures model paths and runtime parameters. Produces an `OcrEngine`. `det_model_dir` / `rec_model_dir` accept PaddleOCR model directories. |
 | `PaddleInferenceConfig` | Reads preprocessing parameters, thresholds, and the dictionary from a PaddleOCR `inference.yml`.         |
-| `OcrEngine`        | Facade that executes detection + recognition. Provides `run_from_path` and `run_from_image`.                  |
+| `OcrEngine`        | Facade that executes detection + recognition: `run_from_path` / `run_from_image` / `run_from_bytes`, `run_many_from_paths` / `run_many_from_images` for several images, and `warmup` to compile plans ahead of time. |
 | `OcrResult`        | Holds the text, confidence score, and `Polygon` bounding box for a single region.                             |
 | `OcrError`         | Enumerates all errors emitted by the library (I/O, model loading, preprocessing, inference, post-processing). |
 | `Polygon`          | Re-export of `geo-types::Polygon`. Useful for downstream geometry processing.                                 |
@@ -259,6 +297,11 @@ Each English document mirrors the Japanese source to help international contribu
   - GitHub Actions CI and a fixture download script.
 - 2026-10-03: **v0.2.1**: fixed recognition region overflow and detection output
   shape validation; added regression tests and expanded source documentation.
+- 2026-10-08: **Performance work (unreleased)**, benchmarked against OpenVINO under identical conditions (`docs/devlog/perf/`); output unchanged:
+  - Default inference threads capped at 16 instead of 8 (3-18% faster end to end).
+  - Each plan shape compiles once (first run 10-23% faster); `OcrEngine::warmup` added.
+  - `run_many_from_paths` / `run_many_from_images` for several images (1.5-2.4x throughput).
+  - Proposed tract PRs for depthwise convolutions and packing (sonos/tract#2976-#2978).
 
 ## Contributing
 

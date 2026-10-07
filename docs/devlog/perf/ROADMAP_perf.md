@@ -32,6 +32,7 @@ CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）
 | `[~]` | [`task-perf-006`](task-perf-006-tract-intraop.md) | tract の depthwise 畳み込みの SIMD 化と、パックの並列化（upstream への PR） | 実装と計測は完了。tract main + 修正で合計 −29〜43%、出力は一致。PR: sonos/tract#2976、#2977、#2978（レビューとリリース待ち） |
 | `[x]` | [`task-perf-007`](task-perf-007-warmup.md) | 推論計画を事前にコンパイルする API（`OcrEngine::warmup`）と、同じ計画の重複コンパイルの排除 | 重複コンパイルをなくし、初回 −10〜23%、ピークメモリは上限 8 の水準に戻った。warmup で初回がさらに −16〜33% |
 | `[x]` | [`task-perf-008`](task-perf-008-run-many.md) | 複数の画像をまとめて処理する API（`run_many_from_images` / `run_many_from_paths`） | スループット 1.45〜2.06 倍、結果は 1 枚ずつと一致。tiny は OpenVINO（1 枚ずつ）を上回る |
+| `[x]` | [`task-perf-009`](task-perf-009-rec-profile.md) | 認識モデルの演算子ごとのプロファイル | 認識の 66〜80% は行列演算。OpenVINO との残りの差は、認識の 1 スレッドの効率（1.1〜1.34 倍）でほぼ説明できる。本クレート側の対策は見送り |
 
 進める順番:
 
@@ -54,7 +55,7 @@ task-perf-006 の実測（修正版の tract）では、small（搭乗券）は 
 | 低 | 認識の幅を 64 刻みにまとめる、または上限を設ける | 計画のキャッシュの再利用率が上がる。ただしパディングの量が変わるので、出力への影響を測る必要がある |
 | 低 | 推論計画ごとに重みのコピーを持つ問題を調べる | medium では、計画のキャッシュで約 1 GB を使っている |
 | 中 | `run_many` の同時に処理する画像の数を指定できるようにする | 今は推論スレッド数（16）と同じで、medium ではメモリのピークが 1 枚ずつの 3 倍（3.2 GB）になる（[benchmark-openvino-throughput](benchmark-openvino-throughput.md)） |
-| 中 | 認識モデルの演算子ごとのプロファイル | 修正版の tract でも認識が処理時間の大半を占める。複数画像では CPU を使い切っているので、カーネルの効率が次の課題 |
+| 低 | tract の行列演算: 小さい `k` と `M` の効率（CTC の全結合層）とパックの削減（upstream） | task-perf-009。tiny と small の残り 2 割程度の差の主因 |
 | 低 | 行の向きの分類器も、バッチ単位で並列化する | 認識と同じ方法で並列化できる |
 | 低 | ブラウザのマルチスレッド化（`wasm-bindgen-rayon`、tract の `RayonGlobal`） | COOP/COEP ヘッダが必要 |
 | 低 | `ocr_smoke --benchmark` でも Windows の電力スロットリングを外す | ベンチマーク用の example では対応済み |
