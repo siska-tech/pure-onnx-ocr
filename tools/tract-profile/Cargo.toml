@@ -1,0 +1,15 @@
+[package]
+name = "tract-profile"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Per-node timing of a PaddleOCR detection model compiled with tract the way pure-onnx-ocr compiles it."
+
+# Standalone workspace, like tools/openvino-bench: not built by the parent
+# crate's workspace or CI.
+[workspace]
+
+[dependencies]
+# Same versions as pure-onnx-ocr's Cargo.lock.
+tract-onnx = "=0.23.8"
+tract-linalg = { version = "=0.23.8", features = ["multithread-mm"] }

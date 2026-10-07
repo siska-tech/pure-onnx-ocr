@@ -1,6 +1,6 @@
 ---
 status: todo
-priority: medium
+priority: low
 assignee: Backend
 start_date:
 end_date:
@@ -13,7 +13,8 @@ depends_on: perf/task-perf-004-det-profile
 
 ## 背景
 - [benchmark-openvino](benchmark-openvino.md) は、この方法で det 推論が 557 → 約 200 ms（v6 small）になると見積もっている。認識をバッチ並列にしたとき（task-perf-001）と同じ考え方である。
-- ただし、v6 tiny と small の検出には SE ブロック（`GlobalAveragePool`）がある。タイルごとに平均が変わるので、どれだけ重ねても確率マップは元と一致しない。既定の動作で PaddleOCR と同じ出力を保つ方針に反するので、既定では使わない。
+- ただし、[task-perf-004](task-perf-004-det-profile.md) で、v6 の検出モデルはすべて画像全体の平均（空間方向の `ReduceMean`。tiny と small はさらに `GlobalAveragePool`）を使うことが分かった。タイルごとに平均が変わるので、どれだけ重ねても確率マップは元と一致しない。既定の動作で PaddleOCR と同じ出力を保つ方針に反するので、既定では使わない。
+- task-perf-004 により、出力を変えずに同程度の効果が見込める [task-perf-006](task-perf-006-tract-intraop.md)（depthwise の並列化など）を優先する。本タスクは、006 の結果を見てから着手するかどうかを決める。
 - 搭乗券くらいの小さい入力（`512x896`）では、重ねる部分の割合が大きく、計算量が増える。約 200 ms という見積もりは楽観的である。
 
 ## 要件
