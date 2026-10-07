@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-08（v0.2.1 以降の未リリースの変更を含む）
+改訂: 2026-10-08（v0.3.0）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -32,7 +32,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.2.1"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.3.0"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
@@ -346,7 +346,7 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
   - CI（GitHub Actions）と、テスト用モデルの取得スクリプトを整備した。
 
 - 2026-10-03: **v0.2.1**。認識領域の整数オーバーフローと検出出力の形状検証を修正し、回帰テストとソースコメントを整備した。
-- 2026-10-08: **性能改善（未リリース）**。OpenVINO と同じ条件で比べ、CPU 推論を速くした（`docs/devlog/perf/`）。出力は変わらない。
+- 2026-10-08: **v0.3.0**。OpenVINO と同じ条件で比べ、CPU 推論を速くした（`docs/devlog/perf/`）。出力は変わらない。
   - 既定の推論スレッド数を最大 16 にした（合計 −3〜18%）。
   - 同じ形の推論計画の重複コンパイルをなくし（初回 −10〜23%）、`OcrEngine::warmup` を追加した。
   - 複数画像をまとめて処理する `run_many_from_paths` / `run_many_from_images` を追加した（スループット 1.5〜2.4 倍）。
