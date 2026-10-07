@@ -1237,8 +1237,14 @@ impl OcrEngineBuilder {
     /// single-threaded.
     ///
     /// Defaults to [`default_inference_threads`](crate::default_inference_threads):
-    /// the number of logical CPUs capped at 16. Ignored (always 1) on
-    /// WebAssembly or when the `multithread` feature is disabled.
+    /// the number of logical CPUs capped at 16. Ignored (always 1) when the
+    /// `multithread` feature is disabled and on WebAssembly builds without
+    /// the `atomics` target feature.
+    ///
+    /// On WebAssembly with atomics (the thread-enabled browser build),
+    /// inference runs on rayon's global pool, which must be started before
+    /// `build` (wasm-bindgen-rayon's `initThreadPool`). The default is the
+    /// pool size, and larger values are capped to it.
     pub fn inference_threads(mut self, threads: usize) -> Self {
         self.inference_threads = Some(threads.max(1));
         self
@@ -1304,6 +1310,7 @@ impl OcrEngineBuilder {
         config.inference_threads = if crate::threading::MULTITHREAD_SUPPORTED {
             self.inference_threads
                 .unwrap_or_else(crate::threading::default_inference_threads)
+                .min(crate::threading::max_inference_threads())
         } else {
             1
         };

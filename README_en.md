@@ -188,7 +188,7 @@ Detection resizes the long side, normalises in BGR order with ImageNet statistic
 | Detection thresholds from `inference.yml` | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | pipeline defaults (0.3 / 0.6 / 1.5) |
 | Page orientation correction (0/90/180/270) | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | off |
 | Text-line flip correction (0/180) | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | off |
-| Inference threads | `inference_threads(8)` | `--threads N` | logical CPUs, at most 16 (1 on WebAssembly) |
+| Inference threads | `inference_threads(8)` | `--threads N` | logical CPUs, at most 16 (WebAssembly: the thread pool size; 1 in the single-threaded build) |
 | Compiled plan cache limit | `plan_cache_capacity(4, 16)` | n/a | 4 detection / 16 recognition |
 | Compile plans ahead of the first run | `engine.warmup(width, height)` | n/a | compiled on first use |
 | Many images in one call (same results as one by one) | `engine.run_many_from_paths(&paths)` / `run_many_from_images(&images)` | n/a | one `run_*` call per image |
@@ -197,7 +197,7 @@ Detection resizes the long side, normalises in BGR order with ImageNet statistic
 The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` and `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx`. An `x1_0` text-line classifier also exists, but `x0_25` is about 3x faster on tract and is recommended.
 
 > **Known limitations:**
-> - Inference uses as many threads as logical CPUs (at most 16) by default; `inference_threads(1)` runs single-threaded. Browsers (WebAssembly) always run single-threaded.
+> - Inference uses as many threads as logical CPUs (at most 16) by default; `inference_threads(1)` runs single-threaded. In browsers (WebAssembly), multi-threading needs the thread-enabled build and a cross-origin isolated page ([Multi-threading in browsers](#multi-threading-in-browsers)).
 > - PP-OCRv6 medium takes about 4.1 s per image on CPU (tract, 16 threads). Prefer tiny or small when speed matters. See `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` for a comparison with PP-OCRv5.
 > - Text-line flip correction can miss short all-uppercase lines such as `TAIYUAN`.
 > - Document unwarping (UVDoc) and layout analysis are not supported.
@@ -237,6 +237,32 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 | PP-OCRv6 medium | 30.4 s |
 
 `OcrEngine` is `Send + Sync`, so one engine wrapped in an `Arc` can serve several threads at once.
+
+### Multi-threading in browsers
+
+Cross-origin isolated pages can run inference on several threads (Web Workers): recognition batches and matrix multiplications run in parallel, with the same output as the single-threaded build. With PP-OCRv5 mobile and 4 threads, it was 2.4-3.0x faster than v0.3.0 (single-threaded) in headless Chromium on 4 vCPUs ([task-perf-010](docs/devlog/perf/task-perf-010-wasm-threads.md)).
+
+- **Build**: shared memory needs nightly Rust and `-Z build-std`. `bindings/wasm/threads/` pins a nightly for this build only; the rest of the repository stays on stable. `scripts/build_wasm.sh --threads` writes `examples/web/pkg-threads`. See [bindings/wasm/threads/README.md](bindings/wasm/threads/README.md).
+- **Headers**: serve the page (and the Worker scripts) with the headers below. The threaded build cannot load unless `crossOriginIsolated` is `true`.
+  ```
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp   (or credentialless)
+  ```
+  Hosts that cannot set headers, such as GitHub Pages, can use coi-serviceworker ([examples/web/README.md](examples/web/README.md)).
+- **Usage**: in a Web Worker, call `initThreadPool` once before building the engine. rayon's threads are nested Workers started from that Worker.
+
+```js
+import init, { initThreadPool, OcrEngineBuilder } from "./pkg-threads/pure_onnx_ocr_wasm.js";
+await init();
+await initThreadPool(navigator.hardwareConcurrency);
+const engine = new OcrEngineBuilder()
+  .detModel(detOnnxBytes, detYamlText)
+  .recModel(recOnnxBytes, recYamlText)
+  .inferenceThreads(4)   // default: the pool size; larger values are capped to it
+  .build();
+```
+
+The single-threaded build exports an `initThreadPool` that resolves without doing anything; `threadsSupported()` tells the builds apart. The demo (`examples/web/worker.js`) loads the threaded build on isolated pages and the single-threaded one elsewhere. Shared memory is capped at 2 GiB.
 
 ### Troubleshooting
 

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>pure-onnx-ocr benchmark</title>
+</head>
+<body>
+  <p>Driven by <code>bench.mjs</code>: <code>window.runBench(config)</code> loads an engine in
+    <code>worker.js</code> and runs OCR <code>config.rounds</code> times.</p>
+  <script type="module">
+    window.runBench = async (config) => {
+      // One Worker per configuration: a Worker's thread pool cannot be resized.
+      const worker = new Worker("./worker.js", { type: "module" });
+      const request = (message, transfer = []) =>
+        new Promise((resolve, reject) => {
+          worker.onmessage = ({ data }) =>
+            data.type === "error" ? reject(new Error(data.message)) : resolve(data);
+          worker.postMessage(message, transfer);
+        });
+      try {
+        const image = await (await fetch(config.image)).arrayBuffer();
+        const loaded = await request({ type: "load", ...config.engine });
+        const runs = [];
+        let output;
+        for (let i = 0; i < config.rounds; i++) {
+          const copy = image.slice(0);
+          const started = performance.now();
+          output = await request({ type: "run", image: copy }, [copy]);
+          runs.push({ wall: performance.now() - started, ...output.timings });
+        }
+        return {
+          build: loaded.build,
+          threads: loaded.threads,
+          loadMs: loaded.ms,
+          runs,
+          memoryBytes: output.memoryBytes,
+          results: output.results,
+        };
+      } finally {
+        worker.terminate();
+      }
+    };
+    window.benchReady = true;
+  </script>
+</body>
+</html>

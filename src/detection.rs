@@ -118,7 +118,7 @@ impl DetInferenceSession {
 
     /// Runs inference on a pool of `threads` worker threads (`1` runs
     /// single-threaded). Has no effect without the `multithread` feature or
-    /// on WebAssembly.
+    /// on WebAssembly builds without the `atomics` target feature.
     pub fn set_inference_threads(&mut self, threads: usize) {
         self.executor = crate::threading::executor_for(threads);
     }
