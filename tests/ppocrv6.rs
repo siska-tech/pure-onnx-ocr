@@ -587,7 +587,21 @@ fn run_many_matches_run_per_image() {
         return;
     };
     let boarding = fixtures.join("images/general_ocr_002.jpg");
-    let japanese = fixtures.join("images/ja.jpg");
+    // A second image of another size; ja.jpg only comes with
+    // `fetch_fixtures.sh --all`, so fall back to a crop of the boarding pass.
+    let japanese = match fixtures.join("images/ja.jpg") {
+        path if path.exists() => path,
+        _ => {
+            let path = env::temp_dir().join("pure-onnx-ocr-run-many-crop.png");
+            let image = image::open(&boarding).unwrap();
+            let (width, height) = (image.width(), image.height());
+            image
+                .crop_imm(0, 0, width, height * 2 / 3)
+                .save(&path)
+                .unwrap();
+            path
+        }
+    };
     let missing = fixtures.join("images/does-not-exist.jpg");
     let paths = [
         boarding.clone(),
