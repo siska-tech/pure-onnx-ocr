@@ -29,13 +29,13 @@ CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）
 | `[-]` | [`task-perf-005`](task-perf-005-det-tiling.md) | 検出のタイル分割（試作と影響の測定、採用してもオプトイン） | 見送り。006 の後では、4 分割でも全体の 6〜7% 程度しか縮まず、出力も変わる |
 | `[~]` | [`task-perf-006`](task-perf-006-tract-intraop.md) | tract の depthwise 畳み込みの SIMD 化と、パックの並列化（upstream への PR） | 実装と計測は完了。tract main + 修正で合計 −29〜43%、出力は一致。small は OpenVINO の約 1.3 倍。PR とリリース待ち |
 | `[x]` | [`task-perf-007`](task-perf-007-warmup.md) | 推論計画を事前にコンパイルする API（`OcrEngine::warmup`）と、同じ計画の重複コンパイルの排除 | 重複コンパイルをなくし、初回 −10〜23%、ピークメモリは上限 8 の水準に戻った。warmup で初回がさらに −16〜33% |
-| `[ ]` | [`task-perf-008`](task-perf-008-run-many.md) | 複数の画像をまとめて処理する API（スループット向け） | 画像をまたいで検出を並列に実行する |
+| `[x]` | [`task-perf-008`](task-perf-008-run-many.md) | 複数の画像をまとめて処理する API（`run_many_from_images` / `run_many_from_paths`） | スループット 1.45〜2.06 倍、結果は 1 枚ずつと一致。tiny は OpenVINO（1 枚ずつ）を上回る |
 
 進める順番:
 
 1. task-perf-002 → task-perf-003 → task-perf-004（完了）
 2. task-perf-007（完了）→ task-perf-006（実装と計測は完了。tract への PR とリリース待ち）。task-perf-005 は見送り。
-3. task-perf-008
+3. task-perf-008（完了）
 
 出力を変えないタスク（003、006、007、008）だけで見込める到達点:
 

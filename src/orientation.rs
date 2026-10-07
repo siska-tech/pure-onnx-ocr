@@ -226,6 +226,23 @@ impl OrientationClassifier {
     /// Classifies every image. Images are processed in a single batch, so
     /// callers should chunk large inputs.
     pub fn classify(&self, images: &[RgbImage]) -> TractResult<Vec<OrientationPrediction>> {
+        self.classify_on(images, &self.executor)
+    }
+
+    /// Same as [`classify`](Self::classify), single-threaded, for callers
+    /// that already run several images in parallel.
+    pub(crate) fn classify_single_threaded(
+        &self,
+        images: &[RgbImage],
+    ) -> TractResult<Vec<OrientationPrediction>> {
+        self.classify_on(images, &crate::threading::Executor::SingleThread)
+    }
+
+    fn classify_on(
+        &self,
+        images: &[RgbImage],
+        executor: &crate::threading::Executor,
+    ) -> TractResult<Vec<OrientationPrediction>> {
         if images.is_empty() {
             return Ok(Vec::new());
         }
@@ -245,8 +262,7 @@ impl OrientationClassifier {
         let plan = self.plan_for_batch(images.len())?;
         let tensor: Tensor = batch.into_dyn().into();
         let run_start = crate::time::Instant::now();
-        let outputs =
-            crate::threading::run_with(&self.executor, || plan.run(tvec!(tensor.into())))?;
+        let outputs = crate::threading::run_with(executor, || plan.run(tvec!(tensor.into())))?;
         log::debug!(
             "[Orientation] classified {} image(s) in {:?}",
             images.len(),

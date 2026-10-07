@@ -73,6 +73,24 @@ impl DetInferenceSession {
     /// `resized_dims` must agree with the tensor's width and height.
     /// Model compilation, execution and output conversion errors propagate.
     pub fn run(&self, input: &PreprocessedDetInput) -> TractResult<DetInferenceOutput> {
+        self.run_on(input, &self.executor)
+    }
+
+    /// Runs one image single-threaded. Used when several images already run
+    /// in parallel (see `RecInferenceSession::run_single_threaded` for why
+    /// nesting tract's parallel matrix multiplication there is unsafe).
+    pub(crate) fn run_single_threaded(
+        &self,
+        input: &PreprocessedDetInput,
+    ) -> TractResult<DetInferenceOutput> {
+        self.run_on(input, &crate::threading::Executor::SingleThread)
+    }
+
+    fn run_on(
+        &self,
+        input: &PreprocessedDetInput,
+        executor: &crate::threading::Executor,
+    ) -> TractResult<DetInferenceOutput> {
         log::debug!(
             "[DetInfer] Running inference with input dims {:?}",
             input.tensor.shape()
@@ -81,9 +99,8 @@ impl DetInferenceSession {
         let (width, height) = input.resized_dims;
         let plan = self.runnable_for_dims(width, height)?;
 
-        let outputs = crate::threading::run_with(&self.executor, || {
-            plan.run(tvec!(input.tensor.clone().into()))
-        })?;
+        let outputs =
+            crate::threading::run_with(executor, || plan.run(tvec!(input.tensor.clone().into())))?;
         let output_tensor = outputs
             .into_iter()
             .next()

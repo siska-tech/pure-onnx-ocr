@@ -9,6 +9,12 @@ Before 1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- `OcrEngine::run_many_from_images` and `run_many_from_paths` process several
+  images in one call with the same results as one call per image. Detection
+  and the orientation classifiers run on several images at once and the
+  recognition batches of all images run together: throughput rose 1.45-2.06x
+  on PP-OCRv6 (16 images, 16-thread i7-1360P). `examples/throughput_bench.rs`
+  measures it.
 - `OcrEngine::warmup(width, height)` compiles the detection plan for an
   image size, the recognition plan for text lines of the minimum width and
   the orientation classifiers' plans ahead of the first run.

@@ -37,7 +37,7 @@
 | 型 | 主なメソッド |
 | :--- | :--- |
 | `OcrEngineBuilder` | `new`、モデルの指定（後述）、パラメータの指定（後述）、`build` |
-| `OcrEngine` | `run_from_path`、`run_from_image`、`run_from_bytes`、`run_with_metrics_from_{path,image,bytes}`、`warmup`、`config`、`det_model_path`、`rec_model_path`、`dictionary_path`、`rec_batch_size` |
+| `OcrEngine` | `run_from_path`、`run_from_image`、`run_from_bytes`、`run_with_metrics_from_{path,image,bytes}`、`run_many_from_{images,paths}`、`warmup`、`config`、`det_model_path`、`rec_model_path`、`dictionary_path`、`rec_batch_size` |
 | `OcrResult` | `text: String`、`confidence: f32`、`bounding_box: Polygon<f64>` |
 | `OcrRunWithMetrics` | `results`、`timings: OcrTimings`、`doc_orientation_angle: Option<u32>` |
 | `OcrTimings` / `StageTimings` | 全体・画像デコード・方向分類・検出と認識の各ステージ（前処理、推論、後処理）の所要時間 |
@@ -127,6 +127,7 @@
 * `run_with_metrics_*` は、`OcrRunWithMetrics` を返す（所要時間、ページの角度）。
 * 処理は同期的に実行する。`OcrEngine` は `Send + Sync` で、`Arc` で包めば複数スレッドから同時に使える。
 * `config()` は、実際に使っている `OcrEngineConfig`（YAML を反映した後の値）を返す。
+* `run_many_from_images(&[DynamicImage])` / `run_many_from_paths(&[P])` は、画像ごとの `Result<Vec<OcrResult>, OcrError>` を入力の順に返す。結果は 1 枚ずつ `run_*` を呼んだ場合と同じで、検出と認識を画像をまたいで並列に実行する。1 枚の失敗はほかの画像に影響しない。
 * `warmup(width, height)` は、その画像サイズの検出、最小幅の認識、向きの分類器の推論計画を事前にコンパイルする。結果は変わらない。
 * `det_model_path()` などは `Option<&Path>` を返す（メモリ入力の場合は `None`）。
 

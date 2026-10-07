@@ -153,6 +153,7 @@ Detection resizes the long side, normalises in BGR order with ImageNet statistic
 | Inference threads | `inference_threads(8)` | `--threads N` | logical CPUs, at most 16 (1 on WebAssembly) |
 | Compiled plan cache limit | `plan_cache_capacity(4, 16)` | n/a | 4 detection / 16 recognition |
 | Compile plans ahead of the first run | `engine.warmup(width, height)` | n/a | compiled on first use |
+| Many images in one call (same results as one by one) | `engine.run_many_from_paths(&paths)` / `run_many_from_images(&images)` | n/a | one `run_*` call per image |
 | Loading and inference logs | emitted through the `log` crate | `-v` / `--verbose` | warnings only |
 
 The orientation classifiers are available on Hugging Face as `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` and `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx`. An `x1_0` text-line classifier also exists, but `x0_25` is about 3x faster on tract and is recommended.

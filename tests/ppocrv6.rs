@@ -576,3 +576,68 @@ fn warmup_does_not_change_results() {
     warmed.warmup(0, 0).unwrap();
     assert_eq!(read(&warmed), cold);
 }
+
+#[test]
+fn run_many_matches_run_per_image() {
+    let (Some(det), Some(rec), Some(fixtures)) = (
+        model_dir("tiny", "det"),
+        model_dir("tiny", "rec"),
+        fixture_dir(),
+    ) else {
+        return;
+    };
+    let boarding = fixtures.join("images/general_ocr_002.jpg");
+    let japanese = fixtures.join("images/ja.jpg");
+    let missing = fixtures.join("images/does-not-exist.jpg");
+    let paths = [
+        boarding.clone(),
+        japanese.clone(),
+        missing,
+        boarding.clone(),
+    ];
+    let key = |results: Vec<pure_onnx_ocr::OcrResult>| {
+        results
+            .into_iter()
+            .map(|r| {
+                (
+                    r.text,
+                    r.confidence.to_bits(),
+                    format!("{:?}", r.bounding_box),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for batch_size in [1, 6] {
+        let mut builder = OcrEngineBuilder::new()
+            .det_model_dir(&det)
+            .rec_model_dir(&rec)
+            .rec_batch_size(batch_size);
+        // Exercise the single-threaded orientation paths too when available.
+        if let (Some(doc), Some(textline)) = (
+            classifier_dir("PP-LCNet_x1_0_doc_ori"),
+            classifier_dir("PP-LCNet_x0_25_textline_ori"),
+        ) {
+            builder = builder
+                .doc_orientation_model_dir(doc)
+                .textline_orientation_model_dir(textline);
+        }
+        let engine = builder.build().unwrap();
+        let expected: Vec<_> = [&boarding, &japanese]
+            .iter()
+            .map(|path| key(engine.run_from_path(path).unwrap()))
+            .collect();
+        assert!(expected.iter().all(|results| !results.is_empty()));
+
+        let many = engine.run_many_from_paths(&paths);
+        assert_eq!(many.len(), 4);
+        let mut many = many.into_iter();
+        assert_eq!(key(many.next().unwrap().unwrap()), expected[0]);
+        assert_eq!(key(many.next().unwrap().unwrap()), expected[1]);
+        assert!(matches!(
+            many.next().unwrap(),
+            Err(pure_onnx_ocr::OcrError::ImageDecode { .. })
+        ));
+        assert_eq!(key(many.next().unwrap().unwrap()), expected[0]);
+    }
+}
