@@ -26,7 +26,7 @@ CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）
 | `[x]` | [`task-perf-002`](task-perf-002-openvino-bench.md) | OpenVINO 比較の計測ツールと報告書を取り込み、計測の手順を決める | A/B モード（`--baseline-exe`、`--add-config`）を追加した |
 | `[x]` | [`task-perf-003`](task-perf-003-default-threads.md) | 既定の推論スレッド数の上限を 8 から 16 に引き上げる | 合計 −3〜18%（全モデル）、出力は一致。初回の実行中のメモリのピークが増えたが、007 で解消 |
 | `[x]` | [`task-perf-004`](task-perf-004-det-profile.md) | 検出モデルの演算子ごとのプロファイルと、画像全体を使う演算子の確認 | depthwise が 8 スレッドでも速くならず、検出の 36〜50% を占める。全モデルに画像全体の平均がある |
-| `[ ]` | [`task-perf-005`](task-perf-005-det-tiling.md) | 検出のタイル分割（試作と影響の測定、採用してもオプトイン） | 優先度を下げた。全モデルで出力が一致しない。006 の結果を見て判断 |
+| `[-]` | [`task-perf-005`](task-perf-005-det-tiling.md) | 検出のタイル分割（試作と影響の測定、採用してもオプトイン） | 見送り。006 の後では、4 分割でも全体の 6〜7% 程度しか縮まず、出力も変わる |
 | `[~]` | [`task-perf-006`](task-perf-006-tract-intraop.md) | tract の depthwise 畳み込みの SIMD 化と、パックの並列化（upstream への PR） | 実装と計測は完了。tract main + 修正で合計 −29〜43%、出力は一致。small は OpenVINO の約 1.3 倍。PR とリリース待ち |
 | `[x]` | [`task-perf-007`](task-perf-007-warmup.md) | 推論計画を事前にコンパイルする API（`OcrEngine::warmup`）と、同じ計画の重複コンパイルの排除 | 重複コンパイルをなくし、初回 −10〜23%、ピークメモリは上限 8 の水準に戻った。warmup で初回がさらに −16〜33% |
 | `[ ]` | [`task-perf-008`](task-perf-008-run-many.md) | 複数の画像をまとめて処理する API（スループット向け） | 画像をまたいで検出を並列に実行する |
@@ -34,7 +34,7 @@ CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）
 進める順番:
 
 1. task-perf-002 → task-perf-003 → task-perf-004（完了）
-2. task-perf-007（完了）→ task-perf-006（実装と計測は完了。tract への PR とリリース待ち）。task-perf-005 は不要になる見込み（006 で目標に届いた）。
+2. task-perf-007（完了）→ task-perf-006（実装と計測は完了。tract への PR とリリース待ち）。task-perf-005 は見送り。
 3. task-perf-008
 
 出力を変えないタスク（003、006、007、008）だけで見込める到達点:
