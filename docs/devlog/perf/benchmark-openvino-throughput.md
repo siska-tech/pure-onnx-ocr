@@ -111,7 +111,7 @@ pure-onnx-ocr はどちらも `run_many_from_images`、OpenVINO は複数画像�
 
 - `pure-many` の平均使用コア数は 14.2〜15.1 で、16 スレッドをほぼ使い切っている。OpenVINO は最速の設定で 12.0〜13.6 である。
 - そのため、本クレートのスループットをこれ以上上げるには、**同じ計算をより少ない CPU 時間で行う**（カーネルの効率を上げる）必要がある。複数画像の場合、並列化の工夫で縮められる余地はほとんど残っていない。
-- 修正版の tract でも認識が処理時間の大半を占める（[task-perf-006](task-perf-006-tract-intraop.md)）ので、次の対象は認識モデルの演算子である。
+- 修正版の tract でも認識が処理時間の大半を占める（[task-perf-006](task-perf-006-tract-intraop.md)）。残りの差を詰めるには、認識モデルの演算子の効率を調べる必要がある。
 
 ### 3. メモリ
 
@@ -125,7 +125,7 @@ pure-onnx-ocr はどちらも `run_many_from_images`、OpenVINO は複数画像�
 - 両方とも、同じ ONNX ファイル、同じ画像、同じ前処理と後処理のコードを使い、出力が完全に一致することを確かめた。
 - 両方とも、複数画像を並列に処理する、それぞれの最速の使い方で比べた。OpenVINO は、ストリーム数のスイープで最も速かった設定を、モデルごとに選んだ。
 - OpenVINO の非同期 API（`start_async` とコールバック）や、検出と認識のパイプライン化（画像 N の認識と画像 N+1 の検出を重ねる）は試していない。これらでさらに速くなる可能性はある。本クレートも同じ構造の処理なので、両方に同じ余地がある。
-- 修正版の tract は、まだリリースされていない（upstream main と、未提出の 3 つの修正）。数値は、tract のリリース後に計測し直す。
+- 修正版の tract は、まだリリースされていない（upstream main と、tract に提案中の 3 つの修正 [sonos/tract#2976](https://github.com/sonos/tract/pull/2976)、[#2977](https://github.com/sonos/tract/pull/2977)、[#2978](https://github.com/sonos/tract/pull/2978)）。数値は、tract のリリース後に計測し直す。
 
 ## 再現手順
 
