@@ -4,7 +4,9 @@
 
 CPU 推論（tract）の速度を、PaddleOCR 公式の CPU 推論（OpenVINO）に近づける。
 
-[benchmark-openvino](benchmark-openvino.md)（2026-10-07）時点で、本クレートは同じ PC・同じ ONNX の OpenVINO の 1.8〜2.7 倍の時間がかかっている。差の 6〜9 割は検出の推論から来ている。
+[benchmark-openvino](benchmark-openvino.md)（2026-10-07）時点で、本クレートは同じ PC・同じ ONNX の OpenVINO の 1.8〜2.7 倍の時間がかかっていた。差の 6〜9 割は検出の推論から来ていた。
+
+[benchmark-openvino-throughput](benchmark-openvino-throughput.md)（2026-10-08、複数画像のスループット、両方とも最速の使い方）では、OpenVINO に対して tract 0.23.8 で 64〜81%、修正版の tract（task-perf-006）で 79〜99%（medium は同等）だった。メモリのピークは OpenVINO の 18〜66%。
 
 | 指標（i7-1360P） | 現状 | 目標 |
 | :--- | ---: | ---: |
@@ -51,6 +53,8 @@ task-perf-006 の実測（修正版の tract）では、small（搭乗券）は 
 | 見送り | 重い部分を、本クレート側のグラフの書き換えで置き換える | task-perf-004 で、重いのは depthwise そのものだと分かった。別の演算子に置き換えても速くならない |
 | 低 | 認識の幅を 64 刻みにまとめる、または上限を設ける | 計画のキャッシュの再利用率が上がる。ただしパディングの量が変わるので、出力への影響を測る必要がある |
 | 低 | 推論計画ごとに重みのコピーを持つ問題を調べる | medium では、計画のキャッシュで約 1 GB を使っている |
+| 中 | `run_many` の同時に処理する画像の数を指定できるようにする | 今は推論スレッド数（16）と同じで、medium ではメモリのピークが 1 枚ずつの 3 倍（3.2 GB）になる（[benchmark-openvino-throughput](benchmark-openvino-throughput.md)） |
+| 中 | 認識モデルの演算子ごとのプロファイル | 修正版の tract でも認識が処理時間の大半を占める。複数画像では CPU を使い切っているので、カーネルの効率が次の課題 |
 | 低 | 行の向きの分類器も、バッチ単位で並列化する | 認識と同じ方法で並列化できる |
 | 低 | ブラウザのマルチスレッド化（`wasm-bindgen-rayon`、tract の `RayonGlobal`） | COOP/COEP ヘッダが必要 |
 | 低 | `ocr_smoke --benchmark` でも Windows の電力スロットリングを外す | ベンチマーク用の example では対応済み |

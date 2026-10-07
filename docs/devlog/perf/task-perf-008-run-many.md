@@ -92,4 +92,4 @@ task-perf-006 の worktree（tract main + 3 つの修正）で、同じ計測を
 - `throughput_bench` の各ラウンドで、`run_many_from_images` と `run_from_image` の結果が一致した。
 
 ## 残課題
-- メモリのピークは計測していない。グループの大きさ（`inference_threads` 枚）を変えられるようにするかは、必要になってから検討する。
+- メモリのピークは [benchmark-openvino-throughput](benchmark-openvino-throughput.md) で計測した。`run_many` のピークは 1 枚ずつのときの 2.5〜3.7 倍（medium 1,072 → 3,227 MB）で、実行後のメモリは変わらない。それでも OpenVINO（複数画像の最速の設定）の 18〜66% である。同時に処理する画像の数を指定できるようにする（ROADMAP の Follow-up）。
