@@ -23,10 +23,46 @@
 //! const results = engine.run(await bytes("image.jpg"));
 //! // [{ text: "BOARDING", confidence: 0.99, box: [[x, y] x 4], polygon: [[x, y], ...] }, ...]
 //! ```
+//!
+//! # Threads
+//!
+//! The `threads` feature builds a multi-threaded variant (nightly Rust, see
+//! `bindings/wasm/threads/README.md`). It needs a cross-origin isolated page
+//! (COOP/COEP headers) and runs inference on a pool of nested Web Workers:
+//!
+//! ```js
+//! import init, { initThreadPool, OcrEngineBuilder } from "./pkg-threads/pure_onnx_ocr_wasm.js";
+//! await init();
+//! await initThreadPool(navigator.hardwareConcurrency); // once, before build()
+//! const engine = new OcrEngineBuilder()/* .detModel(...).recModel(...) */.build();
+//! ```
+//!
+//! Call it from a Web Worker: the calling thread blocks while the pool works,
+//! which browsers only allow off the main thread. In the single-threaded
+//! build, `initThreadPool` resolves immediately without starting anything
+//! and `threadsSupported()` returns `false`.
 
 use js_sys::{Array, Object, Reflect};
 use pure_onnx_ocr::{min_area_quad, DetLimitType, OcrResult, RecCropMode};
 use wasm_bindgen::prelude::*;
+
+#[cfg(feature = "threads")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
+/// Single-threaded build: accepts the same call as the threaded build and
+/// resolves immediately, so one Worker script can load either build.
+#[cfg(not(feature = "threads"))]
+#[wasm_bindgen(js_name = initThreadPool)]
+pub fn init_thread_pool(_num_threads: usize) -> js_sys::Promise {
+    js_sys::Promise::resolve(&JsValue::UNDEFINED)
+}
+
+/// Whether this build runs inference on multiple threads (`true` only for
+/// the `threads` build).
+#[wasm_bindgen(js_name = threadsSupported)]
+pub fn threads_supported() -> bool {
+    pure_onnx_ocr::MULTITHREAD_SUPPORTED
+}
 
 fn to_js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
@@ -130,6 +166,14 @@ impl OcrEngineBuilder {
         self.map(|b| b.rec_batch_size(size))
     }
 
+    /// Number of inference threads. Defaults to the size of the pool started
+    /// by `initThreadPool` and is capped to it; always 1 in the
+    /// single-threaded build. Same as the Rust builder's `inference_threads`.
+    #[wasm_bindgen(js_name = inferenceThreads)]
+    pub fn inference_threads(self, threads: usize) -> Self {
+        self.map(|b| b.inference_threads(threads))
+    }
+
     /// Loads the models and returns a ready engine.
     pub fn build(mut self) -> Result<OcrEngine, JsError> {
         let inner = self.inner.take().unwrap_or_default();
@@ -148,6 +192,12 @@ pub struct OcrEngine {
 
 #[wasm_bindgen]
 impl OcrEngine {
+    /// Number of threads this engine runs inference on.
+    #[wasm_bindgen(getter, js_name = inferenceThreads)]
+    pub fn inference_threads(&self) -> usize {
+        self.inner.config().inference_threads
+    }
+
     /// Runs OCR on an encoded image (PNG, JPEG, ...).
     ///
     /// Returns `[{ text, confidence, box, polygon }, ...]`: `box` is the rotated

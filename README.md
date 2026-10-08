@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-08（v0.3.0）
+改訂: 2026-10-08（v0.3.1）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -32,7 +32,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.3.0"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.3.1"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
@@ -226,7 +226,7 @@ cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg
 | 検出 YAML のしきい値を使う | `det_postprocess_from_model_config(true)` | `--det-params-from-config` | パイプラインの既定値 (0.3 / 0.6 / 1.5) |
 | ページの向き補正（0/90/180/270） | `doc_orientation_model_dir("models/PP-LCNet_x1_0_doc_ori")` | `--doc-ori-model-dir DIR` | 無効 |
 | 行の上下補正（0/180） | `textline_orientation_model_dir("models/PP-LCNet_x0_25_textline_ori")` | `--textline-ori-model-dir DIR` | 無効 |
-| 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 16）。WebAssembly では 1 |
+| 推論スレッド数 | `inference_threads(8)` | `--threads N` | 論理 CPU 数（最大 16）。WebAssembly ではスレッドプールのサイズ（シングルスレッド版は 1） |
 | 推論計画のキャッシュ上限 | `plan_cache_capacity(4, 16)` | なし | 検出 4 / 認識 16 |
 | 推論計画の事前コンパイル | `engine.warmup(width, height)` | なし | 初回の実行時にコンパイル |
 | 複数画像の一括処理（結果は 1 枚ずつと同じ） | `engine.run_many_from_paths(&paths)` / `run_many_from_images(&images)` | なし | 1 枚ずつ `run_*` |
@@ -235,7 +235,7 @@ cargo run --release --bin ocr_smoke -- tests/fixtures/images/general_ocr_002.jpg
 向きの分類器は、Hugging Face の `PaddlePaddle/PP-LCNet_x1_0_doc_ori_onnx` と `PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx` から取得します。行の向きの分類器は `x1_0` 版もありますが、tract 上では `x0_25` 版のほうが約 3 倍速いため、こちらを推奨します。
 
 > **既知の制約:**
-> - 推論は既定で論理 CPU 数（最大 16）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）では常にシングルスレッドです。
+> - 推論は既定で論理 CPU 数（最大 16）のスレッドを使います。`inference_threads(1)` でシングルスレッドにできます。ブラウザ（WebAssembly）でマルチスレッドを使うには、スレッド版のビルドと cross-origin isolated なページが必要です（[ブラウザでのマルチスレッド](#ブラウザでのマルチスレッド)）。
 > - PP-OCRv6 medium は CPU (tract・16 スレッド) で 1 枚あたり約 4.1 秒かかります。速度を優先する場合は tiny / small を推奨します。PP-OCRv5 との比較は `docs/devlog/ppocrv6/benchmark-v5-vs-v6.md` を参照してください。
 > - 行の上下補正は、短い大文字だけの行（`TAIYUAN` など）で判定を誤ることがあります。
 > - 文書の歪み補正（UVDoc）とレイアウト解析には対応していません。
@@ -275,6 +275,32 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
 | PP-OCRv6 medium | 30.4 秒 |
 
 `OcrEngine` は `Send + Sync` なので、`Arc` で包めば複数スレッドから同時に使えます。
+
+### ブラウザでのマルチスレッド
+
+cross-origin isolated なページでは、推論を複数のスレッド（Web Worker）で実行できます。認識のバッチと行列積が並列に動き、出力はシングルスレッド版と同じです。4 スレッドで、2 回目以降の処理がシングルスレッド版の 2.0〜3.3 倍速くなりました（PP-OCRv6 tiny / small / medium と PP-OCRv5 mobile、ヘッドレス Chromium、4 vCPU。[task-perf-010](docs/devlog/perf/task-perf-010-wasm-threads.md)）。
+
+- **ビルド**: 共有メモリを使うため、nightly の Rust と `-Z build-std` が必要です。`bindings/wasm/threads/` で日付を固定した nightly を使います（リポジトリのほかの部分は stable のままです）。`scripts/build_wasm.sh --threads` で `examples/web/pkg-threads` に出力します。詳細は [bindings/wasm/threads/README.md](bindings/wasm/threads/README.md) を参照してください。
+- **必要なヘッダ**: ページ（と Worker のスクリプト）を、次のヘッダ付きで配信します。`crossOriginIsolated` が `true` にならないと、スレッド版は読み込めません。
+  ```
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp   （または credentialless）
+  ```
+  GitHub Pages のようにヘッダを設定できない場合は、coi-serviceworker を使います（[examples/web/README.md](examples/web/README.md)）。
+- **使い方**: Web Worker の中で、エンジンを作る前に `initThreadPool` を 1 回呼びます。rayon のスレッドは、その Worker から作られる入れ子の Worker になります。
+
+```js
+import init, { initThreadPool, OcrEngineBuilder } from "./pkg-threads/pure_onnx_ocr_wasm.js";
+await init();
+await initThreadPool(navigator.hardwareConcurrency);
+const engine = new OcrEngineBuilder()
+  .detModel(detOnnxBytes, detYamlText)
+  .recModel(recOnnxBytes, recYamlText)
+  .inferenceThreads(4)   // 省略時はプールのサイズ。それより大きい値はプールのサイズになる
+  .build();
+```
+
+シングルスレッド版にも同じ名前の `initThreadPool` があり、何もせずに完了します。どちらのビルドかは `threadsSupported()` で分かります。デモ（`examples/web/worker.js`）は、isolated なページではスレッド版を、それ以外ではシングルスレッド版を読み込みます。共有メモリの上限は 2 GiB で、PP-OCRv6 medium のピーク（約 1.2 GiB）は収まります。
 
 ### よくあるエラー
 
@@ -351,6 +377,9 @@ const results = engine.run(imageBytes); // [{ text, confidence, box, polygon }, 
   - 同じ形の推論計画の重複コンパイルをなくし（初回 −10〜23%）、`OcrEngine::warmup` を追加した。
   - 複数画像をまとめて処理する `run_many_from_paths` / `run_many_from_images` を追加した（スループット 1.5〜2.4 倍）。
   - tract の depthwise 畳み込みとパックを改善する PR を提案した（sonos/tract#2976〜#2978）。
+- 2026-10-08: **v0.3.1**。ブラウザ（WebAssembly）のマルチスレッド版を追加した（`docs/devlog/perf/task-perf-010-wasm-threads.md`）。ネイティブ版の動作は変わらない。
+  - cross-origin isolated なページでは、推論を複数の Web Worker で実行する（4 スレッドでシングルスレッド版の 2.0〜3.3 倍）。出力はネイティブ版と一致する。
+  - `initThreadPool`、`threadsSupported()`、`inferenceThreads` をバインディングに追加し、デモはスレッド版とシングルスレッド版を自動で切り替える。
 
 ## コントリビューション
 

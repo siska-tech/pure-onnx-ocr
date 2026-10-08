@@ -75,3 +75,32 @@ jobs:
         run: cargo build --release -p pure-onnx-ocr-wasm --target wasm32-unknown-unknown
       - name: Library for WASI
         run: cargo build --release --lib --target wasm32-wasip1
+
+  wasm-threads:
+    name: WebAssembly build with threads (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the nightly pinned in bindings/wasm/threads/rust-toolchain.toml
+      # (with rust-src for -Z build-std).
+      - name: Install the pinned nightly toolchain
+        working-directory: bindings/wasm/threads
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-threads
+          workspaces: ". -> target/wasm-threads"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.105
+      # bindings/wasm/threads/.cargo/config.toml sets the target, the
+      # atomics flags, build-std and target/wasm-threads.
+      - name: Browser bindings with threads (shared memory, wasm-bindgen-rayon)
+        working-directory: bindings/wasm/threads
+        run: cargo build --release -p pure-onnx-ocr-wasm --features threads
+      - name: wasm-bindgen output uses shared memory
+        run: |
+          wasm-bindgen --target web --out-dir pkg-threads \
+            target/wasm-threads/wasm32-unknown-unknown/release/pure_onnx_ocr_wasm.wasm
+          grep -q 'shared:true' pkg-threads/pure_onnx_ocr_wasm.js
+          ls pkg-threads/snippets/*/src/workerHelpers.no-bundler.js

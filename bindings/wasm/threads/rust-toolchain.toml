@@ -1,0 +1,9 @@
+# Toolchain for the multi-threaded browser build only (rustup picks this file
+# up when cargo runs from this directory). The rest of the repository builds
+# on stable. Shared-memory WebAssembly needs `-Z build-std`, which is
+# nightly-only; the date is pinned so CI and local builds match.
+[toolchain]
+channel = "nightly-2026-10-06"
+components = ["rust-src"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

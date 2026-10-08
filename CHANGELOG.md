@@ -7,6 +7,41 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-08
+
+### Added
+
+- Multi-threaded browser build. `pure-onnx-ocr-wasm` gets a `threads`
+  feature built from `bindings/wasm/threads` (pinned nightly,
+  `-Z build-std`, shared memory with a 2 GiB maximum): inference runs on a
+  wasm-bindgen-rayon pool of nested Web Workers, with recognition batches
+  in parallel and tract's matrix multiplications on rayon's global pool
+  (`Executor::RayonGlobal`). It needs a cross-origin isolated page
+  (COOP/COEP headers). Output is identical to the single-threaded build.
+  With 4 threads, runs after the first were 2.0-3.3x faster than the
+  single-threaded build on PP-OCRv6 tiny / small / medium and PP-OCRv5
+  mobile (headless Chromium, 4 vCPUs), and PP-OCRv6 medium peaked at
+  1.2 GiB of WebAssembly memory.
+  `scripts/build_wasm.sh [--threads]` builds either variant, and CI builds
+  both.
+- WebAssembly bindings: `initThreadPool(n)` (from wasm-bindgen-rayon; a
+  no-op that resolves immediately in the single-threaded build),
+  `threadsSupported()`, `OcrEngineBuilder.inferenceThreads(n)` and
+  `OcrEngine.inferenceThreads`.
+- Web demo: `worker.js` loads the multi-threaded build when the page is
+  cross-origin isolated and falls back to the single-threaded one; a thread
+  selector; `serve.mjs --coi` serves with COOP/COEP headers; the README
+  explains coi-serviceworker for GitHub Pages. `bench.html` / `bench.mjs`
+  measure both builds in headless Chrome and check their output against
+  the native build (`examples/ocr_json.rs`).
+
+### Changed
+
+- WebAssembly builds with the `atomics` target feature now report
+  `MULTITHREAD_SUPPORTED == true` and honour `inference_threads`, capped to
+  the size of rayon's global pool (which is also the default). Other
+  WebAssembly builds and native builds are unchanged.
+
 ## [0.3.0] - 2026-10-08
 
 CPU performance work, measured against OpenVINO Runtime on the same PC, ONNX
@@ -169,7 +204,8 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.1.0...v0.2.0

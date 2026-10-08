@@ -28,6 +28,7 @@ sample*.jpg
 # wasm-bindgen output
 bindings/wasm/pkg/
 examples/web/pkg/
+examples/web/pkg-threads/
 examples/web/models/
 
 # Python environment for scripts/paddleocr_reference.py (uv)

@@ -26,6 +26,15 @@
       <option value="medium">PP-OCRv6 medium</option>
     </select>
   </label>
+  <label>Threads:
+    <select id="threads">
+      <option value="0">auto</option>
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="4">4</option>
+      <option value="8">8</option>
+    </select>
+  </label>
   <label><input type="checkbox" id="textline"> text-line orientation</label>
   <label><input type="checkbox" id="doc"> document orientation</label>
   <input type="file" id="file" accept="image/*">
@@ -43,6 +52,7 @@
 
     let worker = null;
     let loadedKey = null;
+    let engineInfo = "";
 
     function request(message, transfer = []) {
       return new Promise((resolve, reject) => {
@@ -54,20 +64,26 @@
 
     async function ensureEngine() {
       const tier = $("tier").value;
-      const key = `${tier}|${$("textline").checked}|${$("doc").checked}`;
+      const threads = Number($("threads").value);
+      const key = `${tier}|${threads}|${$("textline").checked}|${$("doc").checked}`;
       if (worker && loadedKey === key) return;
       worker?.terminate();
       worker = new Worker("./worker.js", { type: "module" });
       status(`Loading PP-OCRv6 ${tier}...`);
       const loaded = await request({
         type: "load",
+        threads,
         det: `models/ppocrv6/${tier}_det`,
         rec: `models/ppocrv6/${tier}_rec`,
         textlineOrientation: $("textline").checked ? "models/PP-LCNet_x0_25_textline_ori" : null,
         docOrientation: $("doc").checked ? "models/PP-LCNet_x1_0_doc_ori" : null,
       });
       loadedKey = key;
-      status(`Models loaded in ${loaded.ms.toFixed(0)} ms.`);
+      engineInfo =
+        loaded.build === "threads"
+          ? `${loaded.threads} threads`
+          : `single-threaded${loaded.crossOriginIsolated ? "" : ", page not cross-origin isolated"}`;
+      status(`Models loaded in ${loaded.ms.toFixed(0)} ms (${engineInfo}).`);
     }
 
     function draw(bitmap, results) {
@@ -105,7 +121,8 @@
         `${output.results.length} regions in ${t.total.toFixed(0)} ms ` +
           `(detection ${t.detection.toFixed(0)} ms, recognition ${t.recognition.toFixed(0)} ms` +
           `${t.orientation ? `, orientation ${t.orientation.toFixed(0)} ms` : ""})` +
-          (output.docOrientationAngle ? `, page rotated ${output.docOrientationAngle}°` : "")
+          (output.docOrientationAngle ? `, page rotated ${output.docOrientationAngle}°` : "") +
+          ` [${engineInfo}]`
       );
       // Exposed for automated checks (see examples/web/README.md).
       window.ocrOutput = output;
@@ -122,9 +139,10 @@
       }
     });
 
-    // ?image=URL[&tier=small&textline=1&doc=1] runs OCR on page load.
+    // ?image=URL[&tier=small&threads=4&textline=1&doc=1] runs OCR on page load.
     const params = new URLSearchParams(location.search);
     if (params.get("tier")) $("tier").value = params.get("tier");
+    if (params.get("threads")) $("threads").value = params.get("threads");
     $("textline").checked = params.get("textline") === "1";
     $("doc").checked = params.get("doc") === "1";
     if (params.get("image")) {

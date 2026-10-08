@@ -1,0 +1,34 @@
+# Multi-threaded browser build (`pure-onnx-ocr-wasm --features threads`).
+# Cargo merges this file with the repository's `.cargo/config.toml`, which
+# already enables simd128; run `scripts/build_wasm.sh --threads` or see
+# README.md in this directory.
+
+[build]
+target = "wasm32-unknown-unknown"
+# Keep the std rebuilt with atomics apart from the stable build's artifacts.
+target-dir = "../../../target/wasm-threads"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
+  # Shared memory imported from JavaScript so that wasm-bindgen-rayon's
+  # Workers can use the same memory. The linker does not add these flags by
+  # itself; without them the memory is not shared and `initThreadPool` fails
+  # with "Memory could not be cloned".
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--import-memory",
+  # Shared memory must declare its maximum up front: 2 GiB (32768 pages).
+  # PP-OCRv6 medium needs about 1 GiB; 4 GiB reservations fail on some
+  # mobile browsers. See docs/devlog/perf/task-perf-010-wasm-threads.md.
+  "-C", "link-arg=--max-memory=2147483648",
+  # Thread-local storage and heap symbols wasm-bindgen needs to start threads.
+  "-C", "link-arg=--export=__wasm_init_tls",
+  "-C", "link-arg=--export=__tls_size",
+  "-C", "link-arg=--export=__tls_align",
+  "-C", "link-arg=--export=__tls_base",
+  "-C", "link-arg=--export=__heap_base",
+]
+
+[unstable]
+# The prebuilt std is compiled without atomics, so rebuild it.
+build-std = ["panic_abort", "std"]
