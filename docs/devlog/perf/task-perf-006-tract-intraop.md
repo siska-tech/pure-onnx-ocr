@@ -1,9 +1,9 @@
 ---
-status: progress
+status: completed
 priority: high
 assignee: Backend
 start_date: 2026-10-07
-end_date:
+end_date: 2026-10-22
 tags: [performance, detection, tract, upstream, depthwise]
 depends_on: perf/task-perf-004-det-profile
 ---
@@ -38,6 +38,9 @@ tract の depthwise 畳み込みを中心に、検出で並列化されていな
 - 取り込まれるまでの間、fork の tract に依存して公開することはしない。
 
 ## 結果（要点）
+
+**2026-10-22 追記: 3 つの PR は tract 0.23.9 に取り込まれ、本クレートの依存を 0.23.9 に更新した**（下の「tract 0.23.9 への更新」）。
+
 
 - **upstream の tract main（未リリースの 0.23.9-pre）では、計画した 4 つのうち 3 つがすでに解決されていた**。
   - depthwise のチャネル方向の並列化（対象 1）
@@ -135,3 +138,42 @@ OpenVINO の値は報告書のもので、同じ時間帯に交互に計測し�
 ## テスト
 - tract: `cargo test --release -p tract-linalg --features multithread-mm`（3,861 件）と `cargo test --release -p tract-core`（354 件）が成功した。`cargo fmt --all --check` も通った。clippy の警告は 126 件で、変更前と同じ（すべて既存のもの）。
 - 本クレート: 修正版 tract でのパイプライン全体の出力が、tract 0.23.8 と全モデル・全画像で一致した。
+- 2026-10-22: 3 つの PR が取り込まれた tract 0.23.9 がリリースされた。本クレートの依存を 0.23.9 に更新し、出力と速度を確かめた（下）。
+
+## tract 0.23.9 への更新（2026-10-22）
+
+tract 0.23.9 に、3 つの変更がすべて入っていることをソースで確かめた（`linalg/src/x86_64/depthwise.rs`、`MAX_VECTORISED_TAPS = 128`、`pack_tensor_view` の並列化）。パックの並列化は `Executor::RayonGlobal` にも対応しているので、ブラウザのスレッド版（task-perf-010）でも効く。
+
+- `Cargo.toml` の `tract-onnx` / `tract-linalg` を `0.23.9` 以上にした。`tools/openvino-bench` と `tools/tract-profile` の lock も 0.23.9 にした。
+- MSRV（1.91）は変わらない（tract 0.23.9 の要件も 1.91）。
+
+### 出力
+
+`examples/ocr_json` で、tract 0.23.8 と 0.23.9 の出力を比べた（5 モデル × 3 画像: 搭乗券 `general_ocr_002.jpg`、日本語 `ja.jpg`、合成画像 1000×700）。
+
+- **15 通りすべてで、領域数、文字列、box の座標が完全に一致した。**
+- 信頼度は最大 5×10⁻⁶ 違った（浮動小数点の演算順序の違い。上の「出力の一致」と同じ傾向）。
+- `cargo test --release --workspace`（`--ignored` の PP-OCRv6 small / medium の搭乗券のテストを含む）と MSRV の `cargo check` が成功した。
+
+### 速度（ネイティブ）
+
+`examples/ocr_bench`（`--threads 4 --rec-batch-size 1 --runs 5`）で、0.23.8 と 0.23.9 のビルドを交互に 3 ラウンド実行し、中央値を取った。4 vCPU（Intel Xeon 2.10 GHz）のクラウドのコンテナで、上の表の i7-1360P とは別の環境である。
+
+| Model | 画像 | 合計（0.23.8 → 0.23.9、ms） | 倍率 | 検出 | 認識 | 初回 |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| v6 tiny | 搭乗券 | 385 → 203 | 0.53 | 0.31 | 0.77 | 0.65 |
+| v6 tiny | 日本語 | 434 → 232 | 0.53 | 0.30 | 0.70 | 0.54 |
+| v6 small | 搭乗券 | 997 → 563 | 0.56 | 0.27 | 0.80 | 0.66 |
+| v6 small | 日本語 | 1,171 → 707 | 0.60 | 0.24 | 0.82 | 0.63 |
+| v6 medium | 搭乗券 | 3,696 → 2,238 | 0.61 | 0.36 | 0.85 | 0.63 |
+| v6 medium | 日本語 | 4,316 → 2,805 | 0.65 | 0.36 | 0.87 | 0.58 |
+| v5 mobile | 搭乗券 | 1,150 → 560 | 0.49 | 0.39 | 0.47 | 0.68 |
+| v5 mobile | 日本語 | 1,243 → 645 | 0.52 | 0.42 | 0.49 | 0.54 |
+| v5 server | 搭乗券 | 12,042 → 5,993 | 0.50 | 0.46 | 0.52 | 0.53 |
+| v5 server | 日本語 | 13,283 → 6,728 | 0.51 | 0.44 | 0.52 | 0.53 |
+
+- **合計は 0.49〜0.65 倍（1.5〜2.0 倍速い）**。検出は 0.24〜0.46 倍になった。
+- i7-1360P で tract main + 修正を測ったとき（合計 −29〜43%）より縮み方が大きい。この環境は 4 スレッドしかなく、並列化されていなかった depthwise の比重が大きかったためと考えられる（未検証）。
+- PP-OCRv5 は認識モデルにも depthwise 畳み込みがあるので、認識も約半分になった。
+- OpenVINO との比較（openvino-bench）は、i7-1360P で測り直す必要がある（この環境には OpenVINO がない）。
+

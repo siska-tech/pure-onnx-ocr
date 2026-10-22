@@ -1,6 +1,6 @@
 [package]
 name = "pure-onnx-ocr"
-version = "0.3.1"
+version = "0.3.2"
 rust-version = "1.91"
 edition = "2021"
 description = "Pure Rust OCR pipeline that runs PaddleOCR (PP-OCRv5 / PP-OCRv6) DBNet + CTC ONNX models without C/C++ dependencies."
@@ -20,10 +20,12 @@ default = ["multithread"]
 multithread = ["tract-linalg/multithread-mm", "dep:rayon"]
 
 [dependencies]
-tract-onnx = "0.23"
+# 0.23.9: x86_64 depthwise kernel, 9x9 depthwise taps and parallel packing
+# (docs/devlog/perf/task-perf-006-tract-intraop.md).
+tract-onnx = "0.23.9"
 # Same version as tract-onnx (Cargo unifies them); only used to turn on the
 # rayon-based parallel matrix multiplication through the `multithread` feature.
-tract-linalg = "0.23"
+tract-linalg = "0.23.9"
 rayon = { version = "1", optional = true }
 log = "0.4"
 ndarray = "0.17"

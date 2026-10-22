@@ -7,6 +7,18 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-22
+
+### Changed
+
+- tract 0.23.9 (was 0.23.8). It includes the x86_64 depthwise kernel, the
+  128-tap limit for vectorised depthwise convolutions (PP-OCRv6 medium's
+  9x9 kernels) and parallel input packing proposed in task-perf-006
+  (sonos/tract#2976-#2978). End-to-end time dropped to 0.49-0.65x on 4
+  vCPUs (PP-OCRv6 tiny / small / medium, PP-OCRv5 mobile / server); in the
+  browser, 0.62-1.00x. OCR text and boxes are unchanged; confidences differ
+  by at most 5e-6 because of floating-point ordering.
+
 ## [0.3.1] - 2026-10-08
 
 ### Added
@@ -204,7 +216,8 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1

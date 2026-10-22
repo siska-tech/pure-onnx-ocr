@@ -2,7 +2,7 @@
 
 Author: Shion Watanabe  
 First version: 2025-11-09  
-Revised: 2026-10-08 (v0.3.1)
+Revised: 2026-10-22 (v0.3.2)
 Repository: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CTC recognition models without relying on C/C++ runtimes. **PP-OCRv5 and PP-OCRv6 (tiny / small / medium) ONNX exports are supported.** The crate provides a high-level `OcrEngine` facade that hides detection and recognition stages behind a builder-style configuration API.
@@ -25,7 +25,7 @@ Pure Rust OCR pipeline that re-implements the PaddleOCR detection (DBNet) and CT
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.3.1"
+pure_onnx_ocr = "0.3.2"
 image = "0.25"       # recommended for image I/O
 geo-types = "0.7"    # recommended for working with polygon results
 ```
@@ -118,7 +118,7 @@ Measured on a Core i7-1360P (16 threads) with PP-OCRv6 and tract 0.23.8, and com
 | Same, relative to OpenVINO's fastest setup | 64% | 67% | 81% |
 
 - With many images, peak memory is 23-65% of OpenVINO's.
-- With improvements headed for the next tract release (including proposed fixes such as [sonos/tract#2976](https://github.com/sonos/tract/pull/2976)), many-image throughput reaches 79-99% of OpenVINO (medium on par).
+- The table uses tract 0.23.8. With tract 0.23.9 (which includes fixes such as [sonos/tract#2976](https://github.com/sonos/tract/pull/2976)), end-to-end time dropped to 0.49-0.65x on 4 vCPUs with the same text and boxes ([task-perf-006](docs/devlog/perf/task-perf-006-tract-intraop.md)). Measured on the i7-1360P with the patched tract, many-image throughput reached 79-99% of OpenVINO (medium on par).
 - Details: [benchmark-openvino.md](docs/devlog/perf/benchmark-openvino.md) (one image at a time) and [benchmark-openvino-throughput.md](docs/devlog/perf/benchmark-openvino-throughput.md) (many images), both in Japanese. The tool lives in `tools/openvino-bench`.
 
 Getting the most out of it:
@@ -331,6 +331,7 @@ Each English document mirrors the Japanese source to help international contribu
 - 2026-10-08: **v0.3.1**: multi-threaded browser (WebAssembly) build (`docs/devlog/perf/task-perf-010-wasm-threads.md`); native behaviour unchanged:
   - Cross-origin isolated pages run inference on several Web Workers (2.0-3.3x faster than the single-threaded build with 4 threads), with output identical to the native build.
   - The bindings gain `initThreadPool`, `threadsSupported()` and `inferenceThreads`; the demo picks the threaded or single-threaded build automatically.
+- 2026-10-22: **v0.3.2**: tract 0.23.9, which includes the proposed depthwise convolution and packing improvements (sonos/tract#2976-#2978); end-to-end time dropped to 0.49-0.65x on 4 vCPUs (`docs/devlog/perf/task-perf-006-tract-intraop.md`) with unchanged text and boxes.
 
 ## Contributing
 

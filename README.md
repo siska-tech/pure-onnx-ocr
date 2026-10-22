@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-08（v0.3.1）
+改訂: 2026-10-22（v0.3.2）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -32,7 +32,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.3.1"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.3.2"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
@@ -127,7 +127,7 @@ Core i7-1360P（16 スレッド）、PP-OCRv6、tract 0.23.8 での実測値で�
 | 同上、OpenVINO（最速の設定）に対する比 | 64% | 67% | 81% |
 
 - 複数画像を処理するときのメモリのピークは、OpenVINO の 23〜65% です。
-- tract の次のリリースに入る予定の改善（[sonos/tract#2976](https://github.com/sonos/tract/pull/2976) など、提案中の修正を含む）を使うと、複数画像では OpenVINO の 79〜99% になります（medium は同等）。
+- 表の値は tract 0.23.8 のものです。tract 0.23.9（[sonos/tract#2976](https://github.com/sonos/tract/pull/2976) などの修正を含む）では、4 vCPU の環境で合計の時間が 0.49〜0.65 倍になりました（文字列と box は同じ。[task-perf-006](docs/devlog/perf/task-perf-006-tract-intraop.md)）。修正版の tract を i7-1360P で測ったときは、複数画像で OpenVINO の 79〜99% でした（medium は同等）。
 - 詳しくは [benchmark-openvino.md](docs/devlog/perf/benchmark-openvino.md)（1 枚ずつ）と [benchmark-openvino-throughput.md](docs/devlog/perf/benchmark-openvino-throughput.md)（複数画像）を参照してください。計測ツールは `tools/openvino-bench` です。
 
 速度を引き出すには:
@@ -380,6 +380,7 @@ const engine = new OcrEngineBuilder()
 - 2026-10-08: **v0.3.1**。ブラウザ（WebAssembly）のマルチスレッド版を追加した（`docs/devlog/perf/task-perf-010-wasm-threads.md`）。ネイティブ版の動作は変わらない。
   - cross-origin isolated なページでは、推論を複数の Web Worker で実行する（4 スレッドでシングルスレッド版の 2.0〜3.3 倍）。出力はネイティブ版と一致する。
   - `initThreadPool`、`threadsSupported()`、`inferenceThreads` をバインディングに追加し、デモはスレッド版とシングルスレッド版を自動で切り替える。
+- 2026-10-22: **v0.3.2**。tract を 0.23.9 に更新した。提案した depthwise 畳み込みとパックの改善（sonos/tract#2976〜#2978）が取り込まれ、4 vCPU の環境で合計の時間が 0.49〜0.65 倍になった（`docs/devlog/perf/task-perf-006-tract-intraop.md`）。文字列と box は変わらない。
 
 ## コントリビューション
 
