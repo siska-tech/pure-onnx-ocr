@@ -127,7 +127,7 @@ Core i7-1360P（16 スレッド）、PP-OCRv6、tract 0.23.8 での実測値で�
 | 同上、OpenVINO（最速の設定）に対する比 | 64% | 67% | 81% |
 
 - 複数画像を処理するときのメモリのピークは、OpenVINO の 23〜65% です。
-- tract の次のリリースに入る予定の改善（[sonos/tract#2976](https://github.com/sonos/tract/pull/2976) など、提案中の修正を含む）を使うと、複数画像では OpenVINO の 79〜99% になります（medium は同等）。
+- 表の値は tract 0.23.8 のものです。tract 0.23.9（[sonos/tract#2976](https://github.com/sonos/tract/pull/2976) などの修正を含む）では、4 vCPU の環境で合計の時間が 0.49〜0.65 倍になりました（文字列と box は同じ。[task-perf-006](docs/devlog/perf/task-perf-006-tract-intraop.md)）。修正版の tract を i7-1360P で測ったときは、複数画像で OpenVINO の 79〜99% でした（medium は同等）。
 - 詳しくは [benchmark-openvino.md](docs/devlog/perf/benchmark-openvino.md)（1 枚ずつ）と [benchmark-openvino-throughput.md](docs/devlog/perf/benchmark-openvino-throughput.md)（複数画像）を参照してください。計測ツールは `tools/openvino-bench` です。
 
 速度を引き出すには:

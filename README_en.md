@@ -118,7 +118,7 @@ Measured on a Core i7-1360P (16 threads) with PP-OCRv6 and tract 0.23.8, and com
 | Same, relative to OpenVINO's fastest setup | 64% | 67% | 81% |
 
 - With many images, peak memory is 23-65% of OpenVINO's.
-- With improvements headed for the next tract release (including proposed fixes such as [sonos/tract#2976](https://github.com/sonos/tract/pull/2976)), many-image throughput reaches 79-99% of OpenVINO (medium on par).
+- The table uses tract 0.23.8. With tract 0.23.9 (which includes fixes such as [sonos/tract#2976](https://github.com/sonos/tract/pull/2976)), end-to-end time dropped to 0.49-0.65x on 4 vCPUs with the same text and boxes ([task-perf-006](docs/devlog/perf/task-perf-006-tract-intraop.md)). Measured on the i7-1360P with the patched tract, many-image throughput reached 79-99% of OpenVINO (medium on par).
 - Details: [benchmark-openvino.md](docs/devlog/perf/benchmark-openvino.md) (one image at a time) and [benchmark-openvino-throughput.md](docs/devlog/perf/benchmark-openvino-throughput.md) (many images), both in Japanese. The tool lives in `tools/openvino-bench`.
 
 Getting the most out of it:

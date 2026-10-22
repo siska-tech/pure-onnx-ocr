@@ -7,6 +7,16 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- tract 0.23.9 (was 0.23.8). It includes the x86_64 depthwise kernel, the
+  128-tap limit for vectorised depthwise convolutions (PP-OCRv6 medium's
+  9x9 kernels) and parallel input packing proposed in task-perf-006
+  (sonos/tract#2976-#2978). End-to-end time dropped to 0.49-0.65x on 4
+  vCPUs (PP-OCRv6 tiny / small / medium, PP-OCRv5 mobile / server); in the
+  browser, 0.62-1.00x. OCR text and boxes are unchanged; confidences differ
+  by at most 5e-6 because of floating-point ordering.
+
 ## [0.3.1] - 2026-10-08
 
 ### Added
