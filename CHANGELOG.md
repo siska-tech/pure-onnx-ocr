@@ -7,6 +7,8 @@ Before 1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-22
+
 ### Changed
 
 - tract 0.23.9 (was 0.23.8). It includes the x86_64 depthwise kernel, the
@@ -214,7 +216,8 @@ measurements are under `docs/devlog/ppocrv6/`, `docs/devlog/wasm/` and
   pipeline for PaddleOCR PP-OCRv5 ONNX models on `tract-onnx`, the
   `OcrEngineBuilder` / `OcrEngine` API and the `ocr_smoke` CLI.
 
-[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/siska-tech/pure-onnx-ocr/compare/v0.2.0...v0.2.1

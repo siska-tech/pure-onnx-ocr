@@ -2,7 +2,7 @@
 
 作成者: Shion Watanabe  
 初版: 2025-11-09  
-改訂: 2026-10-08（v0.3.1）
+改訂: 2026-10-22（v0.3.2）
 リポジトリ: http://github.com/siska-tech/pure-onnx-ocr
 
 Pure RustでOCRパイプラインを構築するためのライブラリです。Baidu PaddleOCR 由来の検出モデル (DBNet) と認識モデル (CTC) を、Pure Rust エコシステムのみで実行できるよう再設計しています。**PP-OCRv5 と PP-OCRv6 (tiny / small / medium) の ONNX モデルに対応しています。**
@@ -32,7 +32,7 @@ Pure RustでOCRパイプラインを構築するためのライブラリです�
 
 ```toml
 [dependencies]
-pure_onnx_ocr = "0.3.1"         # crates.io リリース後に最新バージョンへ更新してください
+pure_onnx_ocr = "0.3.2"         # crates.io リリース後に最新バージョンへ更新してください
 image = "0.25"                  # OCR結果の描画や前処理に利用する場合
 geo-types = "0.7"               # ポリゴン座標の操作に利用する場合
 ```
@@ -380,6 +380,7 @@ const engine = new OcrEngineBuilder()
 - 2026-10-08: **v0.3.1**。ブラウザ（WebAssembly）のマルチスレッド版を追加した（`docs/devlog/perf/task-perf-010-wasm-threads.md`）。ネイティブ版の動作は変わらない。
   - cross-origin isolated なページでは、推論を複数の Web Worker で実行する（4 スレッドでシングルスレッド版の 2.0〜3.3 倍）。出力はネイティブ版と一致する。
   - `initThreadPool`、`threadsSupported()`、`inferenceThreads` をバインディングに追加し、デモはスレッド版とシングルスレッド版を自動で切り替える。
+- 2026-10-22: **v0.3.2**。tract を 0.23.9 に更新した。提案した depthwise 畳み込みとパックの改善（sonos/tract#2976〜#2978）が取り込まれ、4 vCPU の環境で合計の時間が 0.49〜0.65 倍になった（`docs/devlog/perf/task-perf-006-tract-intraop.md`）。文字列と box は変わらない。
 
 ## コントリビューション
 

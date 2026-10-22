@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "pure-onnx-ocr"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "geo-types",
  "getrandom 0.4.3",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "pure-onnx-ocr-wasm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "js-sys",
  "pure-onnx-ocr",
