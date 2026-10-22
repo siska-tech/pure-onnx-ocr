@@ -11,5 +11,5 @@ description = "Per-node timing of a PaddleOCR detection model compiled with trac
 
 [dependencies]
 # Same versions as pure-onnx-ocr's Cargo.lock.
-tract-onnx = "=0.23.8"
-tract-linalg = { version = "=0.23.8", features = ["multithread-mm"] }
+tract-onnx = "=0.23.9"
+tract-linalg = { version = "=0.23.9", features = ["multithread-mm"] }
